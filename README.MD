@@ -378,4 +378,3 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ## 🤝 Contributors
 
-- AVSR Team @ HCMUT
