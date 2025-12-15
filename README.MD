@@ -352,8 +352,8 @@ ASVR_Viet/
 | Epoch | WER (%) | CER (%) | Notes |
 |-------|---------|---------|-------|
 | 5 | ~37% | ~25% |  |
-| 10 | ~32.45% | ~CER: 14.60% | |
-| 20 | ~29.49% | CER: 13.54% | |
+| 10 | ~32.45% | ~14.60% | |
+| 20 | ~29.49% | ~13.54% | |
 
 ### Training Tips
 
@@ -377,4 +377,5 @@ ASVR_Viet/
 MIT License - See [LICENSE](LICENSE) for details.
 
 ## 🤝 Contributors
-
+- **Nguyễn Phạm Anh Văn** - [@github_username](https://github.com/AnhVan17)
+- **Võ Minh Thịnh** - [@github_username](https://github.com/finalFlash159)
