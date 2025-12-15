@@ -347,13 +347,13 @@ ASVR_Viet/
 
 ## 📊 Kết Quả
 
-### Expected Performance (ViCocktail Dataset)
+### Performance (ViCocktail Dataset)
 
 | Epoch | WER (%) | CER (%) | Notes |
 |-------|---------|---------|-------|
-| 5 | ~45% | ~25% | Initial convergence |
-| 10 | ~30% | ~18% | Improving |
-| 20 | 20-25% | 12-15% | Target |
+| 5 | ~37% | ~25% |  |
+| 10 | ~32.45% | ~CER: 14.60% | |
+| 20 | ~29.49% | CER: 13.54% | |
 
 ### Training Tips
 
