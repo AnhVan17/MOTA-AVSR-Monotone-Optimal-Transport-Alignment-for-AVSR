@@ -377,5 +377,5 @@ ASVR_Viet/
 MIT License - See [LICENSE](LICENSE) for details.
 
 ## 🤝 Contributors
-- **Nguyễn Phạm Anh Văn** - [@github_username](https://github.com/AnhVan17)
-- **Võ Minh Thịnh** - [@github_username](https://github.com/finalFlash159)
+- **Nguyễn Phạm Anh Văn** - [@AnhVan17](https://github.com/AnhVan17)
+- **Võ Minh Thịnh** - [@finalFlash159](https://github.com/finalFlash159)
