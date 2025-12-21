@@ -1,0 +1,69 @@
+from transformers import WhisperTokenizer as HfWhisperTokenizer
+import torch
+from typing import List
+
+class WhisperTokenizer:
+    def __init__(
+        self,
+        language: str = "en",
+        model: str = "openai/whisper-tiny",
+        task: str = "transcribe",
+    ):
+        self.language = language
+        self.model = model
+        self.task = task
+
+        self.tokenizer = HfWhisperTokenizer.from_pretrained(
+            model,
+            language=language,
+            task=task
+        )
+
+        # expose commonly used attributes (READ-ONLY)
+        self.pad_token_id = self.tokenizer.pad_token_id
+        self.bos_token_id = self.tokenizer.bos_token_id
+        self.eos_token_id = self.tokenizer.eos_token_id
+        self.unk_token_id = self.tokenizer.unk_token_id
+
+        print(f"WhisperTokenizer initialized")
+        print(f"   Vocab size: {self.vocab_size}")
+        print(f"   Language: {language}")
+        print(f"   Model: {model}")
+
+    @property
+    def vocab_size(self):
+        return self.tokenizer.vocab_size
+
+    def encode(
+        self,
+        text: str,
+        add_special_tokens: bool = True,
+    ) -> List[int]:
+        """Encode text to token IDs"""
+        return self.tokenizer.encode(
+            text,
+            add_special_tokens=add_special_tokens
+        )
+
+    def batch_decode(
+        self,
+        batch_ids: torch.Tensor,
+        skip_special_tokens: bool = True
+    ) -> List[str]:
+        """Decode batch of token IDs"""
+        return self.tokenizer.batch_decode(
+            batch_ids,
+            skip_special_tokens=skip_special_tokens
+        )
+
+    def get_vocab(self) -> dict:
+        return self.tokenizer.get_vocab()
+
+    def __len__(self):
+        return self.vocab_size
+
+    def __repr__(self):
+        return (
+            f"WhisperTokenizer(model={self.model}, "
+            f"language={self.language}, vocab_size={self.vocab_size})"
+        )
