@@ -1,4 +1,4 @@
-from src.models.fusion.simple import (
+from src.models.fusion.aurora_xt_model import (
     AuroraXT,
     create_model,
     ConformerBlock,

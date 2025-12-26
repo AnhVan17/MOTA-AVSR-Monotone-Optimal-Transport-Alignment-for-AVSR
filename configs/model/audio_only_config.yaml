@@ -1,0 +1,56 @@
+# Audio-Only ASR Configuration
+# ==============================================================
+# Baseline: Chỉ dùng audio features từ Whisper (KHÔNG có visual)
+# So sánh với AVSR để đánh giá hiệu quả của visual features
+# ==============================================================
+
+# Model Architecture
+model:
+  audio_dim: 768              # Whisper features dimension
+  d_model: 256                # Internal model dimension
+  num_encoder_layers: 6       # Conformer encoder layers (giống AVSR)
+  num_decoder_layers: 4       # Hybrid decoder layers (giống AVSR)
+  num_heads: 4                # Multi-head attention heads
+  vocab_size: 121             # Vietnamese character vocabulary
+  dropout: 0.1
+
+# Loss Configuration (giống AVSR)
+loss:
+  ctc_weight: 0.3             # CTC loss weight
+  ce_weight: 0.7              # Cross-entropy loss weight
+
+# Data Configuration
+data:
+  train_manifest: "./data/manifests/train.jsonl"
+  val_manifest: "./data/manifests/val.jsonl"
+  data_root: "./data"
+  batch_size: 32              # Batch size for training
+  num_workers: 4
+
+  max_train_samples: null     # Không giới hạn train samples (dùng hết 63,523)
+  max_val_samples: null       # FIXED: Was 100 (1.4%!), now 3000 (42% of 7,059 val samples)
+                              # Reduces WER variance from ±10% to ±1.5%
+
+# Training Configuration
+training:
+  num_epochs: 20              # Total training epochs
+  learning_rate: 2e-4         # Initial learning rate (FIXED: was 3e-4, too high!)
+  min_lr: 1e-7                # Minimum learning rate for scheduler
+  weight_decay: 0.01          # AdamW weight decay
+  gradient_clip: 5.0          # Gradient clipping threshold
+  
+  # Optimization
+  use_amp: true               # Mixed precision training
+
+# Evaluation
+max_eval_batches: 100         # Max batches per evaluation (FIXED: was 50, now 100 for 3000 samples)
+                              # 3000/32 = 94 batches, so 100 covers all
+
+# Logging & Checkpointing
+use_wandb: true
+wandb_project: "aurora-xt-vietnamese"
+wandb_run: "audio_only_baseline"
+checkpoint_dir: "./checkpoints/audio_only"
+
+# Random seed
+seed: 42

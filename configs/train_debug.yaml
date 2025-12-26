@@ -1,0 +1,55 @@
+
+seed: 42
+
+model:
+  audio_dim: 768
+  visual_dim: 512
+  d_model: 512
+  num_fusion_layers: 3
+  num_decoder_layers: 6
+  num_heads: 8
+  vocab_size: 64000
+  dropout: 0.1
+
+data:
+  train_manifest: "./data/manifests/train.jsonl"
+  val_manifest: "./data/manifests/val.jsonl"
+  data_root: "./data"
+  batch_size: 4              
+  num_workers: 2
+  max_train_samples: 100     
+  max_val_samples: 20        
+
+training:
+  num_epochs: 2             
+  learning_rate: 0.0001      
+  weight_decay: 0.01
+  gradient_clip: 1.0
+  use_amp: true
+  warmup_epochs: 0          
+  lr_scheduler: "cosine"
+  min_lr: 0.000001          
+  accumulation_steps: 1
+
+loss:
+  ctc_weight: 0.3
+  ce_weight: 0.7
+
+logging:
+  use_wandb: false          
+  wandb_project: "avsr-vicocktail"
+  wandb_run_name: "debug-run"
+  wandb_entity: null
+  log_every: 10             
+  val_every: 50             
+  save_every: 100
+  checkpoint_dir: "./checkpoints/debug"
+
+hardware:
+  device: "cuda"
+
+modal:
+  gpu: "T4"                  
+  cpu: 4.0
+  memory: 16384
+  timeout: 3600             

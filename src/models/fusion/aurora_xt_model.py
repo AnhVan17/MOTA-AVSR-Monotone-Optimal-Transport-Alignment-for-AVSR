@@ -403,52 +403,9 @@ class AuroraXT(nn.Module):
         }
 
 
-# Factory function
+
 def create_model(config: Dict) -> AuroraXT:
     """Create AURORA-XT model from config"""
     return AuroraXT(config)
 
 
-# Test
-if __name__ == "__main__":
-    print("="*60)
-    print("Testing AURORA-XT Model")
-    print("="*60)
-    
-    config = {
-        'audio_dim': 768,
-        'visual_dim': 512,
-        'd_model': 256,
-        'num_encoder_layers': 6,
-        'num_decoder_layers': 4,
-        'num_heads': 4,
-        'vocab_size': 220,
-        'dropout': 0.1
-    }
-    
-    model = create_model(config)
-    
-    # Test forward
-    B, T_a, T_v, L = 2, 450, 375, 80  # 15s audio/visual
-    audio = torch.randn(B, T_a, 768)
-    visual = torch.randn(B, T_v, 512)
-    target = torch.randint(0, 220, (B, L))
-    
-    with torch.no_grad():
-        outputs = model(audio, visual, target)
-    
-    print(f"\nInput:")
-    print(f"  Audio: {audio.shape}")
-    print(f"  Visual: {visual.shape}")
-    print(f"  Target: {target.shape}")
-    
-    print(f"\nOutput:")
-    print(f"  CTC logits: {outputs['ctc_logits'].shape}")
-    print(f"  AR logits: {outputs['ar_logits'].shape}")
-    print(f"  Gate weights: {outputs['gate_weights'].shape}")
-    
-    # Count params
-    total = sum(p.numel() for p in model.parameters())
-    print(f"\nTotal params: {total:,} (~{total*4/1024**2:.1f}MB)")
-    
-    print("\n✅ Model test passed!")

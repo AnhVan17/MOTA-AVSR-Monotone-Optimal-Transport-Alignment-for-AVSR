@@ -25,11 +25,11 @@ data:
   num_workers: 4
 
   max_train_samples: null     
-  max_val_samples: 100        
+  max_val_samples: null        
 
 # Training Configuration
 training:
-  num_epochs: 20             
+  num_epochs: 25             
   learning_rate: 3e-4         
   min_lr: 1e-6                
   weight_decay: 0.01          
@@ -39,7 +39,7 @@ training:
   use_amp: true              
 
 # Evaluation
-max_eval_batches: 20          
+max_eval_batches: 100          
 
 # Logging & Checkpointing
 use_wandb: true

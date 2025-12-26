@@ -489,22 +489,66 @@ class PreprocessingPipeline:
     
     @staticmethod
     def _find_text(sample: Dict) -> str:
-        """Find text in sample"""
-        for key in ['txt', 'text', 'label', 'transcript']:
+        """
+        Tìm text transcript. Ưu tiên JSON và các key rõ ràng trước .txt
+        """
+        # 1. Ưu tiên tìm trong file JSON hoặc key 'transcript'
+        for key in ['json', 'transcript', 'label']:
             if key in sample:
                 content = sample[key]
+                if isinstance(content, dict):
+                    # Tìm trong các field phổ biến của JSON
+                    for sub_key in ['text', 'transcript', 'content', 'label', 'caption']:
+                        if sub_key in content and isinstance(content[sub_key], str):
+                            return content[sub_key]
+                elif isinstance(content, str):
+                    return content
+                elif isinstance(content, bytes):
+                    try:
+                        return content.decode('utf-8').strip()
+                    except:
+                        pass
+
+        # 2. Mới tìm đến key 'txt' hoặc 'text' (độ tin cậy thấp hơn)
+        for key in ['txt', 'text']:
+            if key in sample:
+                content = sample[key]
+                text_str = ""
+                
                 if isinstance(content, bytes):
-                    return content.decode('utf-8', errors='ignore')
-                return str(content)
+                    try:
+                        text_str = content.decode('utf-8').strip()
+                    except:
+                        continue
+                elif isinstance(content, str):
+                    text_str = content.strip()
+
+                # 3. VALIDATION QUAN TRỌNG:
+                # Bỏ qua nếu text trông giống đường dẫn file hoặc quá ngắn
+                if not text_str: continue
+                if text_str.endswith('.mp4') or text_str.endswith('.wav'): continue
+                if '/' in text_str or '\\' in text_str: # Có thể là đường dẫn
+                    # Kiểm tra kỹ hơn: nếu có dấu câu tiếng Việt thì giữ, nếu toàn ascii và gạch chéo thì bỏ
+                    vi_chars = 'àáảãạăắằẳẵặâấầẩẫậđèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵ'
+                    if not any(c in text_str.lower() for c in vi_chars):
+                        continue 
+                
+                return text_str
+
         return ""
     
     @staticmethod
     def _normalize_text(text: str) -> str:
-        """Normalize Vietnamese text"""
+        """Normalize Vietnamese text using NFC and cleanup"""
         if not text:
             return ""
+        # Unicode normalization
         text = unicodedata.normalize('NFC', text)
-        return text.lower().strip()
+        # Lowercase & strip
+        text = text.lower().strip()
+        # Remove extra whitespaces
+        text = " ".join(text.split())
+        return text
     
     def run(self, input_dir: str, output_dir: str, manifest_dir: str):
         """

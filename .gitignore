@@ -1,34 +1,57 @@
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
 *.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
 *.egg-info/
+.installed.cfg
 *.egg
-.env
+
+# Virtual Environments
 .venv/
 venv/
 env/
-pip-wheel-metadata/
-build/
-dist/
-verify_pipeline.py
-train_debug.yaml
-test_ctc_decode.py
+ENV/
 
-.ipynb_checkpoints/
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
 
-logs/
+# Project Specific - Data & Models
+data/
+datasets/
 checkpoints/
+docs/
+models/*.pt
+models/*.pth
+*.pt
+*.pth
+*.ckpt
+*.h5
+
+# Logs & Results
+logs/
+results/
 runs/
+wandb/
 *.log
 
-data/hf_cache/
-data/processed/
-data/tmp/
-cache/
-.cache/
-**/.DS_Store
+# Multimedia (Processed/Raw)
 *.mp4
 *.wav
 *.flac
@@ -38,14 +61,36 @@ cache/
 *.zip
 *.tar
 *.tar.gz
+*.tgz
+*.rar
 
+# OS specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Modal & Other
 .modal/
 modal_artifacts/
 volumes/
+.ipynb_checkpoints/
 
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+# Temporary & Test Scripts
+list_checkpoints.py
+vietnamese_noise_augmentation.py
+test_ctc_decode.py
+inspect_data.py
+check_manifests.py
+check_volume.py
+validate_pipeline.py
+test_audio_only_local.py
+test_whisper_baseline.py
+verify_pipeline.py
 
+# Generic test patterns
+test_*.py
+*_test.py
+check_*.py
+verify_*.py
+debug_*.py
 

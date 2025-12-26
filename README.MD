@@ -212,20 +212,21 @@
 
 ### 3️⃣ Model Components Summary
 
-| Component | Model | Input | Output | Purpose |
-|-----------|-------|-------|--------|---------|
-| **Audio Encoder** | Whisper-Small | Waveform [240k] | [~450, 768] | Extract acoustic features |
-| **Visual Encoder** | ResNet-18 | Frames [375, 96, 96] | [375, 512] | Extract lip features |
-| **Quality Gate** | Learned MLP | Audio + Visual | Weights [T, 2] | Adaptive modality fusion |
-| **Conformer** | 6-layer | Fused [T, 256] | Encoded [T, 256] | Contextual encoding |
-| **CTC Head** | Linear | Encoded | Logits [T, vocab] | Frame-level alignment |
-| **AR Decoder** | 4-layer Transformer | Encoded + Targets | Logits [L, vocab] | Autoregressive decoding |
+| Component                | Model               | Input                | Output            | Purpose                   |
+| ------------------------ | ------------------- | -------------------- | ----------------- | ------------------------- |
+| **Audio Encoder**  | Whisper-Small       | Waveform [240k]      | [~450, 768]       | Extract acoustic features |
+| **Visual Encoder** | ResNet-18           | Frames [375, 96, 96] | [375, 512]        | Extract lip features      |
+| **Quality Gate**   | Learned MLP         | Audio + Visual       | Weights [T, 2]    | Adaptive modality fusion  |
+| **Conformer**      | 6-layer             | Fused [T, 256]       | Encoded [T, 256]  | Contextual encoding       |
+| **CTC Head**       | Linear              | Encoded              | Logits [T, vocab] | Frame-level alignment     |
+| **AR Decoder**     | 4-layer Transformer | Encoded + Targets    | Logits [L, vocab] | Autoregressive decoding   |
 
 ---
 
 ## 🚀 Cài Đặt
 
 ### Yêu Cầu
+
 - Python 3.10+
 - CUDA 11.8+ (for GPU training)
 - 16GB+ RAM
@@ -349,11 +350,11 @@ ASVR_Viet/
 
 ### Expected Performance (ViCocktail Dataset)
 
-| Epoch | WER (%) | CER (%) | Notes |
-|-------|---------|---------|-------|
-| 5 | ~45% | ~25% | Initial convergence |
-| 10 | ~30% | ~18% | Improving |
-| 20 | 20-25% | 12-15% | Target |
+| Epoch | WER (%) | CER (%)     | Notes |
+| ----- | ------- | ----------- | ----- |
+| 20    | 29.49%  | CER: 13.54% |       |
+|       |         |             |       |
+|       |         |             |       |
 
 ### Training Tips
 
@@ -378,4 +379,4 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 ## 🤝 Contributors
 
-- AVSR Team @ HCMUT
+- AVSR Team
