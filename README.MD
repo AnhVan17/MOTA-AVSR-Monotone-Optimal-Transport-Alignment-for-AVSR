@@ -350,19 +350,11 @@ ASVR_Viet/
 
 ### Performance (ViCocktail Dataset)
 
-<<<<<<< HEAD
-| Epoch | WER (%) | CER (%)     | Notes |
-| ----- | ------- | ----------- | ----- |
-| 20    | 29.49%  | CER: 13.54% |       |
-|       |         |             |       |
-|       |         |             |       |
-=======
 | Epoch | WER (%) | CER (%) | Notes |
 |-------|---------|---------|-------|
 | 5 | ~37% | ~25% |  |
 | 10 | ~32.45% | ~14.60% | |
 | 20 | ~29.49% | ~13.54% | |
->>>>>>> 8aaba84d8f7f8cb31b560b417160d2f1ea3aa05d
 
 ### Training Tips
 
@@ -386,10 +378,6 @@ ASVR_Viet/
 MIT License - See [LICENSE](LICENSE) for details.
 
 ## 🤝 Contributors
-<<<<<<< HEAD
 
-- AVSR Team
-=======
 - **Nguyễn Phạm Anh Văn** - [@AnhVan17](https://github.com/AnhVan17)
 - **Võ Minh Thịnh** - [@finalFlash159](https://github.com/finalFlash159)
->>>>>>> 8aaba84d8f7f8cb31b560b417160d2f1ea3aa05d
