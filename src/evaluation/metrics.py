@@ -31,18 +31,23 @@ class Evaluator:
         
         return decoded
     
-    def decode_predictions(self, logits: torch.Tensor) -> List[str]:
+    def decode_predictions(self, logits: torch.Tensor, mode: str = "ctc") -> List[str]:
         """
         Decode logits to text
         
         Args:
             logits: [B, T, V]
+            mode: "ctc" or "greedy"
             
         Returns:
             List of decoded strings
         """
+        # Determine blank_id (usually last token in vocab if not specified)
+        # For Whisper, we'll use a high value, let's assume 50257 (pad)
+        blank_id = self.tokenizer.pad_token_id if hasattr(self.tokenizer, 'pad_token_id') else 0
+        
         # CTC decode
-        pred_ids = self.ctc_greedy_decode(logits, blank_id=4)
+        pred_ids = self.ctc_greedy_decode(logits, blank_id=blank_id)
         
         # Convert to text
         texts = []
@@ -57,17 +62,13 @@ class Evaluator:
     
     def decode_targets(self, targets: torch.Tensor) -> List[str]:
         """
-        Decode target tokens to text
-        
-        Args:
-            targets: [B, L]
-            
-        Returns:
-            List of decoded strings
+        Decode target tokens to text, ignoring padding (-100)
         """
         texts = []
         for seq in targets:
-            text = self.tokenizer.decode(seq, skip_special_tokens=True)
+            # Filter out -100 (CE Loss ignore_index)
+            clean_seq = [t.item() for t in seq if t.item() != -100]
+            text = self.tokenizer.decode(clean_seq, skip_special_tokens=True)
             texts.append(text.strip())
         
         return texts

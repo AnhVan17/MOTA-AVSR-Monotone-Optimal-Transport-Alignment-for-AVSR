@@ -1,3 +1,6 @@
+# ============================================
+# Python
+# ============================================
 __pycache__/
 *.pyc
 *.pyo
@@ -5,47 +8,169 @@ __pycache__/
 *.so
 *.egg-info/
 *.egg
+*.py[cod]
+*$py.class
+
+# Virtual Environments
 .env
 .venv/
 venv/
 env/
+ENV/
 pip-wheel-metadata/
+
+# Build artifacts
 build/
 dist/
+*.whl
+
+# ============================================
+# Old & Backup Files (DO NOT COMMIT)
+# ============================================
+*_old.py
+*_backup.py
+*.old
+*.backup
+*_deprecated.py
+src/data/tokenizer_old.py
+src/data/tokenizers/*_old.py
+
+# ============================================
+# Test & Validation Files (Local Only)
+# ============================================
+tests/verify_*.py
+tests/check_*.py
+tests/test_*.py
+scripts/validate_pipeline.py
 verify_pipeline.py
-train_debug.yaml
 test_ctc_decode.py
+debug_*.py
+temp_*.py
 
+# ============================================
+# Jupyter Notebooks
+# ============================================
 .ipynb_checkpoints/
+*.ipynb
 
+# ============================================
+# Logs & Outputs
+# ============================================
 logs/
-checkpoints/
-runs/
 *.log
+runs/
+wandb/
+outputs/
 
-data/hf_cache/
+# ============================================
+# Model Checkpoints & Weights
+# ============================================
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+models/pretrained/
+*.bin
+
+# ============================================
+# Data Files (Large Files)
+# ============================================
+# Raw data
+data/raw/
+data/raw_mirror/
+data/vicocktail/
+
+# Processed features
 data/processed/
+data/processed_features/
 data/tmp/
+data/temp/
+
+# Manifests (can commit sample manifests if small)
+# data/manifests/*.jsonl
+
+# Cache directories
+data/hf_cache/
+data/cache/
 cache/
 .cache/
-**/.DS_Store
+
+# Media files
 *.mp4
 *.wav
 *.flac
 *.webm
 *.mkv
 *.avi
+*.m4a
+*.ogg
+
+# Compressed files
 *.zip
 *.tar
 *.tar.gz
+*.rar
+*.7z
 
+# ============================================
+# Modal Artifacts
+# ============================================
 .modal/
 modal_artifacts/
 volumes/
 
-.DS_Store
-Thumbs.db
+# ============================================
+# IDE & Editor
+# ============================================
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============================================
+# OS Files
+# ============================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============================================
+# Config Files (Sensitive)
+# ============================================
+.env.local
+.env.*.local
+secrets.yaml
+*_secret.yaml
+
+# ============================================
+# Temporary Files
+# ============================================
+tmp/
+temp/
+*.tmp
+*.temp
+
+docs/_build/
+site/
 
 
+vicocktail_preprocessing_with_noise.py
+vietnamese_noise_augmentation.py
+augmented_preprocessing.py
+test_whisper_baseline.py
+test_audio_only_local.py
+
+list_checkpoints.py
+check_manifests.py
+test_metrics.json
+QUICK_START.md
+docs/
+OPTIMIZATION_REPORT.md
+inspect_data.py     
+validate_pipeline.py
+verify_pipeline.py
+validate_pipeline.py

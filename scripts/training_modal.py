@@ -19,7 +19,7 @@ CHECKPOINT_PATH = "/checkpoints"
 # DOCKER IMAGE
 image = (
     modal.Image.debian_slim(python_version="3.10")
-    .apt_install("git")
+    .apt_install("git", "libsndfile1", "ffmpeg")
     .pip_install(
         "torch==2.1.2",
         "torchaudio==2.1.2",
@@ -32,7 +32,8 @@ image = (
         "numpy<2",
         "pyyaml==6.0.1",
         "wandb==0.16.2",
-        "jiwer==3.0.3"
+        "jiwer==3.0.3",
+        "librosa==0.10.1"
     )
 )
 
@@ -40,15 +41,16 @@ app = modal.App(APP_NAME)
 data_volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 checkpoint_volume = modal.Volume.from_name(CHECKPOINT_VOLUME, create_if_missing=True)
 
-# Mount src directory
-image_with_src = image.add_local_dir(
-    local_path=Path(__file__).parent.parent / "src",
-    remote_path="/root/src"
+# Mount src and configs directory
+image_final = (
+    image
+    .add_local_dir(Path(__file__).parent.parent / "src", remote_path="/root/src")
+    .add_local_dir(Path(__file__).parent.parent / "configs", remote_path="/root/configs")
 )
 
 
 @app.cls(
-    image=image_with_src,
+    image=image_final,
     volumes={
         VOL_MOUNT_PATH: data_volume,
         CHECKPOINT_PATH: checkpoint_volume
@@ -72,7 +74,6 @@ class ModalTrainer:
     @modal.method()
     def train(self, config: dict):
         """Run training using shared Trainer"""
-        # Import inside method to use correct path
         from src.training.trainer import Trainer
         
         # Override paths for Modal
@@ -99,18 +100,18 @@ def main(config_path: str = "configs/model/config.yaml"):
         config = yaml.safe_load(f)
     
     print("\n" + "="*70)
-    print("🚀 AURORA-XT Training (Modal)")
+    print("🚀 AURORA-XT Training (Modal - Optimized)")
     print("="*70)
-    print(f"\n📋 Config: {config_path}")
-    print(f"   d_model: {config['model']['d_model']}")
-    print(f"   Encoder: {config['model']['num_encoder_layers']} layers")
-    print(f"   Decoder: {config['model']['num_decoder_layers']} layers")
-    print(f"   Batch: {config['data']['batch_size']}")
-    print(f"   Epochs: {config['training']['num_epochs']}")
+    print(f"📋 Config: {config_path}")
+    print(f"   Model: d_model={config['model']['d_model']}, heads={config['model']['num_heads']}")
+    print(f"   Optim: LR={config['training']['learning_rate']}, Accum={config['training'].get('accumulation_steps', 1)}")
+    print(f"   Regularization: Smoothing={config['training'].get('label_smoothing', 0)}, Dropout={config['model']['dropout']}")
+    print(f"   Hardware: A100-40GB x 1")
+    print("="*70 + "\n")
     
     trainer = ModalTrainer()
     result = trainer.train.remote(config)
     
     print("\n✅ Training complete!")
     print(f"   Best WER: {result['best_wer']:.2f}%")
-    print(f"   Steps: {result['steps']}")
+    print(f"   Total Global Steps: {result['steps']}")

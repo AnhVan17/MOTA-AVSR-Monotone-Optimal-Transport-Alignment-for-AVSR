@@ -1,7 +1,8 @@
 """
-ViCocktail AVSR Preprocessing - Modal Pipeline
-===============================================
-Modal wrapper - uses shared PreprocessingPipeline
+AVSR Preprocessing - Modal Pipeline (FINAL)
+============================================
+WhisperTokenizer + Whisper Encoder Features
+Outputs: audio [T, 768], visual [T, 512], tokens [L]
 """
 
 import modal
@@ -22,8 +23,8 @@ OUTPUT_DIR = f"{VOL_MOUNT_PATH}/processed_features"
 MANIFEST_DIR = f"{VOL_MOUNT_PATH}/manifests"
 
 # Processing limits
-MAX_TRAIN_TARS = 15
-MAX_TEST_TARS = 3
+MAX_TRAIN_TARS = 25
+MAX_TEST_TARS = 5
 SAMPLES_PER_TAR = None
 
 # Config
@@ -124,24 +125,10 @@ class DataProcessor:
         import gc
         
         tar_name = Path(tar_path).stem
-        print(f"\n📦 {tar_name}")
+        print(f"\n📦 Processing TAR: {tar_name}")
         
         save_dir = Path(OUTPUT_DIR) / tar_name
         save_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Skip if already processed
-        existing = list(save_dir.glob("*.pt"))
-        if len(existing) > 10:
-            print(f"  ⏭️  Already processed ({len(existing)} files)")
-            return {
-                "tar_name": tar_name,
-                "is_test": is_test,
-                "samples": [{
-                    "id": f.stem,
-                    "path": str(f.relative_to(Path(OUTPUT_DIR).parent)),
-                    "text": ""
-                } for f in existing]
-            }
         
         dataset = wds.WebDataset(f"file://{tar_path}", shardshuffle=False).decode()
         
@@ -154,30 +141,29 @@ class DataProcessor:
             
             sample_id = sample.get("__key__", f"{tar_name}_{idx:06d}")
             
-            # Use shared pipeline
-            result, error = self.pipeline.process_sample(sample, sample_id)
+            # 1. Find video and text (helper logic from src)
+            video_bytes = self.pipeline._find_video(sample)
+            text_raw = self.pipeline._find_text(sample)
+            
+            if not video_bytes or not text_raw:
+                stats["skip"]["missing_data"] = stats["skip"].get("missing_data", 0) + 1
+                continue
+
+            # 2. Process using updated pipeline
+            result = self.pipeline.process_sample(video_bytes, text_raw, sample_id)
             
             if result:
-                # Clone tensors to prevent memory leaks
-                save_data = {
-                    'id': result['id'],
-                    'audio': result['audio'].clone(),
-                    'visual': result['visual'].clone(),
-                    'text': result['text'].clone() if isinstance(result['text'], torch.Tensor) else result['text'],
-                    'text_raw': result['text_raw']
-                }
-                
                 out_file = save_dir / f"{sample_id}.pt"
-                torch.save(save_data, out_file)
+                torch.save(result, out_file)
                 
                 metadata.append({
                     "id": sample_id,
                     "path": str(out_file.relative_to(Path(OUTPUT_DIR).parent)),
-                    "text": result['text_raw']
+                    "text": text_raw
                 })
                 stats["success"] += 1
             else:
-                stats["skip"][error] = stats["skip"].get(error, 0) + 1
+                stats["skip"]["processing_error"] = stats["skip"].get("processing_error", 0) + 1
             
             if idx % 50 == 0:
                 torch.cuda.empty_cache()
@@ -249,10 +235,11 @@ def list_tar_files():
 @app.function(image=image, volumes={VOL_MOUNT_PATH: volume, MODEL_CACHE_PATH: MODEL_CACHE})
 def warmup_models():
     """Pre-download models"""
-    from transformers import WhisperModel
+    from transformers import WhisperProcessor, WhisperModel
     import timm
     
     print("🔥 Caching models...")
+    WhisperProcessor.from_pretrained("openai/whisper-small", cache_dir=MODEL_CACHE_PATH)
     WhisperModel.from_pretrained("openai/whisper-small", cache_dir=MODEL_CACHE_PATH)
     timm.create_model('resnet18', pretrained=True)
     MODEL_CACHE.commit()

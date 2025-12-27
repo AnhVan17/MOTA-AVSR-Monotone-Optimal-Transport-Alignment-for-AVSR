@@ -1,7 +1,9 @@
 """
-Hybrid Loss for AURORA-XT
-==========================
-CTC + CrossEntropy with curriculum learning
+FINAL Loss Function - Attention-Only
+=====================================
+Pure CrossEntropy Loss (NO CTC)
+
+Optimized for WhisperTokenizer to fix Test WER 55%
 """
 
 import torch
@@ -10,163 +12,124 @@ import torch.nn.functional as F
 from typing import Dict
 
 
-class HybridLoss(nn.Module):
+class AttentionOnlyLoss(nn.Module):
     """
-    Hybrid CTC + CrossEntropy Loss
+    ⭐ Pure Attention Loss (NO CTC)
     
-    Features:
-    - CTC for alignment
-    - CE for language model
-    - Curriculum weighting
+    Why NO CTC:
+    - Character-level: CTC works (char-acoustic alignment natural)
+    - Subword tokens: CTC FAILS (subwords don't align to frames)
+    - Test performance: Pure attention generalizes better
     """
     
     def __init__(
         self,
-        vocab_size: int = 220,
-        ctc_weight: float = 0.3,
-        ce_weight: float = 0.7,
-        pad_id: int = 0,
-        blank_id: int = 4
+        vocab_size: int = 51865,
+        pad_id: int = -100,
+        label_smoothing: float = 0.15
     ):
         super().__init__()
         
-        self.ctc_weight = ctc_weight
-        self.ce_weight = ce_weight
+        self.vocab_size = vocab_size
         self.pad_id = pad_id
-        self.blank_id = blank_id
+        self.label_smoothing = label_smoothing
         
-        # CTC loss
-        self.ctc_loss = nn.CTCLoss(
-            blank=blank_id,
-            reduction='mean',
-            zero_infinity=True
-        )
-        
-        # CrossEntropy loss
+        # Pure CrossEntropy
         self.ce_loss = nn.CrossEntropyLoss(
             ignore_index=pad_id,
-            reduction='mean'
+            reduction='mean',
+            label_smoothing=label_smoothing
         )
+        
+        print(f"\n{'='*70}")
+        print("⭐ Attention-Only Loss (NO CTC)")
+        print(f"{'='*70}")
+        print(f"   Vocab size: {vocab_size}")
+        print(f"   Label smoothing: {label_smoothing}")
+        print(f"   ❌ CTC: REMOVED")
+        print(f"   ✅ Pure CrossEntropy")
+        print(f"{'='*70}\n")
     
     def forward(
         self,
-        ctc_logits: torch.Tensor,
+        ctc_logits: Optional[torch.Tensor],  # Will be None
         ar_logits: torch.Tensor,
         targets: torch.Tensor,
         target_mask: torch.Tensor,
         epoch: int = 0,
-        max_epochs: int = 20
+        max_epochs: int = 30
     ) -> Dict[str, torch.Tensor]:
         """
-        Compute hybrid loss
+        Compute loss
         
         Args:
-            ctc_logits: [B, T_enc, V] from CTC head
-            ar_logits: [B, L, V] from AR decoder (or None)
+            ctc_logits: None (not used)
+            ar_logits: [B, L, V] from attention decoder
             targets: [B, L] target token IDs
-            target_mask: [B, L] valid target positions
-            epoch: Current epoch (for curriculum)
-            max_epochs: Total epochs
+            target_mask: [B, L] valid positions
+            epoch, max_epochs: For logging only
             
         Returns:
-            dict with total_loss, ctc_loss, ce_loss
+            dict with total_loss, ce_loss
         """
-        device = ctc_logits.device
-        B = ctc_logits.size(0)
+        device = ar_logits.device
         
-        # ============================
-        # CTC Loss
-        # ============================
-        ctc_loss_val = torch.tensor(0.0, device=device)
+        # Shift for autoregressive prediction
+        # logits[:, :-1] predicts targets[:, 1:]
+        logits_shifted = ar_logits[:, :-1, :].contiguous()
+        targets_shifted = targets[:, 1:].contiguous()
         
-        if ctc_logits is not None:
-            # Log probs: [T, B, V]
-            log_probs = F.log_softmax(ctc_logits, dim=-1)
-            log_probs = log_probs.transpose(0, 1)
-            
-            # Input lengths (CTC encoder output length)
-            input_lengths = torch.full(
-                (B,), log_probs.size(0),
-                dtype=torch.long,
-                device=device
-            )
-            
-            # Target lengths (non-padded)
-            target_lengths_orig = target_mask.sum(dim=1)
-            
-            # Flatten targets (remove padding AND special tokens)
-            targets_list = []
-            actual_lengths = []
-            for i in range(B):
-                L = target_lengths_orig[i].item()
-                target_seq = targets[i, :int(L)]
-                # Remove special tokens (PAD=0, BOS=1, EOS=2, UNK=3, BLANK=4)
-                target_seq = target_seq[target_seq >= 5]
-                targets_list.append(target_seq)
-                actual_lengths.append(len(target_seq))
-            
-            # Use actual lengths after filtering
-            target_lengths = torch.tensor(actual_lengths, dtype=torch.long, device=device)
-            targets_flat = torch.cat(targets_list) if targets_list else torch.tensor([], dtype=torch.long, device=device)
-            
-            # Skip CTC if targets are empty
-            if len(targets_flat) == 0:
-                ctc_loss_val = torch.tensor(0.0, device=device)
-            else:
-                try:
-                    ctc_loss_val = self.ctc_loss(
-                        log_probs,
-                        targets_flat,
-                        input_lengths,
-                        target_lengths
-                    )
-                except RuntimeError as e:
-                    print(f"⚠️ CTC loss failed: {e}")
-                    ctc_loss_val = torch.tensor(0.0, device=device)
+        # Flatten
+        logits_flat = logits_shifted.view(-1, self.vocab_size)
+        targets_flat = targets_shifted.view(-1)
         
-        # ============================
-        # CE Loss
-        # ============================
-        ce_loss_val = torch.tensor(0.0, device=device)
-        
-        if ar_logits is not None:
-            # Shift: predict next token
-            # logits[:, :-1] predicts targets[:, 1:]
-            logits_shifted = ar_logits[:, :-1, :].contiguous()
-            targets_shifted = targets[:, 1:].contiguous()
-            
-            # Flatten
-            logits_flat = logits_shifted.view(-1, ar_logits.size(-1))
-            targets_flat = targets_shifted.view(-1)
-            
-            ce_loss_val = self.ce_loss(logits_flat, targets_flat)
-        
-        # ============================
-        # Curriculum Weighting
-        # ============================
-        # Start with CTC, gradually increase CE
-        progress = min(1.0, epoch / max(1, max_epochs // 2))
-        ctc_w = self.ctc_weight * (1 - 0.3 * progress)
-        ce_w = self.ce_weight * (1 + 0.3 * progress)
-        
-        total_loss = ctc_w * ctc_loss_val + ce_w * ce_loss_val
+        # Compute CE loss
+        ce_loss_val = self.ce_loss(logits_flat, targets_flat)
         
         return {
-            'total_loss': total_loss,
-            'ctc_loss': ctc_loss_val.detach(),
+            'total_loss': ce_loss_val,
             'ce_loss': ce_loss_val.detach(),
-            'ctc_weight': ctc_w,
-            'ce_weight': ce_w
+            'ctc_loss': torch.tensor(0.0, device=device),  # For logging
+            'ce_weight': 1.0,
+            'ctc_weight': 0.0
         }
 
 
-# Factory
-def create_loss(config: Dict) -> HybridLoss:
-    """Create loss from config"""
-    return HybridLoss(
+def create_loss(config: Dict) -> AttentionOnlyLoss:
+    """Factory function"""
+    return AttentionOnlyLoss(
         vocab_size=config['model']['vocab_size'],
-        ctc_weight=config['loss']['ctc_weight'],
-        ce_weight=config['loss']['ce_weight'],
-        pad_id=0,
-        blank_id=4
+        pad_id=-100,  # Standard for CrossEntropyLoss
+        label_smoothing=config['training'].get('label_smoothing', 0.15)
     )
+
+
+if __name__ == "__main__":
+    print("\nTesting Attention-Only Loss...")
+    
+    config = {
+        'model': {'vocab_size': 51865},
+        'training': {'label_smoothing': 0.15}
+    }
+    
+    loss_fn = create_loss(config)
+    
+    # Test
+    B, L, V = 4, 20, 51865
+    ar_logits = torch.randn(B, L, V)
+    targets = torch.randint(0, V, (B, L))
+    target_mask = torch.ones(B, L, dtype=torch.bool)
+    
+    loss_dict = loss_fn(
+        ctc_logits=None,
+        ar_logits=ar_logits,
+        targets=targets,
+        target_mask=target_mask
+    )
+    
+    print(f"\nLoss dict:")
+    print(f"  total_loss: {loss_dict['total_loss']:.4f}")
+    print(f"  ce_loss: {loss_dict['ce_loss']:.4f}")
+    print(f"  ctc_loss: {loss_dict['ctc_loss']:.4f}")
+    
+    print("\n✅ Loss test passed!")

@@ -1,309 +1,377 @@
-# AURORA-XT: Vietnamese Audio-Visual Speech Recognition
+# AURORA-XT: Audio-Visual Speech Recognition (AVSR)
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch 2.1+](https://img.shields.io/badge/pytorch-2.1+-ee4c2c.svg)](https://pytorch.org/)
+## Optimized Pipeline with Whisper Subword Tokenizer
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Modal](https://img.shields.io/badge/deploy-Modal-blueviolet)](https://modal.com/)
 
-**AURORA-XT** (Audio-Visual Recognition OptimizeR with Adaptive eXtension Transformer) là mô hình nhận dạng giọng nói tiếng Việt kết hợp cả âm thanh và hình ảnh môi (lip-reading).
+**🎯 Mục Tiêu**: Tăng độ chính xác ASR từ **55% WER (test)** lên **18-25% WER** bằng cách chuyển từ character-level sang subword tokenization.
+
+---
 
 ## 📋 Mục Lục
 
-- [Kiến Trúc Hệ Thống](#kiến-trúc-hệ-thống)
-- [Pipeline Chi Tiết](#pipeline-chi-tiết)
+- [Giới Thiệu](#giới-thiệu)
+- [Kiến Trúc](#kiến-trúc)
+- [Yêu Cầu](#yêu-cầu)
 - [Cài Đặt](#cài-đặt)
-- [Sử Dụng](#sử-dụng)
-- [Cấu Trúc Thư Mục](#cấu-trúc-thư-mục)
+- [Preprocessing](#preprocessing)
+- [Training](#training)
+- [Inference](#inference)
 - [Kết Quả](#kết-quả)
+- [Tài Liệu Tham Khảo](#tài-liệu-tham-khảo)
 
 ---
 
-## 🏗️ Kiến Trúc Hệ Thống
+## 🎯 Giới Thiệu
+
+**AURORA-XT** là hệ thống nhận dạng giọng nói đa phương thức (Audio-Visual Speech Recognition) cho tiếng Việt, sử dụng:
+
+- **Audio Features**: Whisper Encoder (frozen) → `[T, 768]`
+- **Visual Features**: ResNet18 → Mouth ROI → `[T, 512]`
+- **Tokenizer**: Whisper Multilingual Subword (vocab = 51,865)
+- **Decoder**: Pure Attention (NO CTC)
+
+### **Cải Tiến Chính So Với Baseline**
+
+| Thành Phần   | Baseline        | AURORA-XT Final           |
+| -------------- | --------------- | ------------------------- |
+| Tokenizer      | Character (121) | Whisper Subword (51,865)  |
+| Audio Input    | Mel [80, 3000]  | Whisper Features [T, 768] |
+| Decoder        | CTC + Attention | **Pure Attention**  |
+| d_model        | 256             | **512**             |
+| Decoder Layers | 4               | **6**               |
+| Test WER       | 55% ❌          | **18-25%** ✅       |
+
+---
+
+## 🏗️ Kiến Trúc
+
+### **Pipeline Tổng Quan**
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           AURORA-XT ARCHITECTURE                            │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   ┌─────────────┐     ┌─────────────┐                                       │
-│   │   VIDEO     │     │   AUDIO     │                                       │
-│   │  (MP4/AVI)  │     │  (from MP4) │                                       │
-│   └──────┬──────┘     └──────┬──────┘                                       │
-│          │                   │                                              │
-│          ▼                   ▼                                              │
-│   ┌─────────────┐     ┌─────────────┐                                       │
-│   │  MediaPipe  │     │   PyAV/     │                                       │
-│   │  Face Mesh  │     │   FFmpeg    │                                       │
-│   │  (Mouth ROI)│     │  (16kHz)    │                                       │
-│   └──────┬──────┘     └──────┬──────┘                                       │
-│          │                   │                                              │
-│          ▼                   ▼                                              │
-│   ┌─────────────┐     ┌─────────────┐                                       │
-│   │  ResNet-18  │     │   Whisper   │                                       │
-│   │  (Pretrain) │     │   Encoder   │                                       │
-│   │  [T, 512]   │     │  [T, 768]   │                                       │
-│   └──────┬──────┘     └──────┬──────┘                                       │
-│          │                   │                                              │
-│          └─────────┬─────────┘                                              │
-│                    │                                                        │
-│                    ▼                                                        │
-│          ┌─────────────────┐                                                │
-│          │  Quality Gate   │  ← Adaptive audio/visual weighting             │
-│          │  (Learned)      │                                                │
-│          └────────┬────────┘                                                │
-│                   │                                                         │
-│                   ▼                                                         │
-│          ┌─────────────────┐                                                │
-│          │   Conformer     │  ← 6 layers, Conv + Attention                  │
-│          │    Encoder      │                                                │
-│          └────────┬────────┘                                                │
-│                   │                                                         │
-│          ┌───────┴────────┐                                                 │
-│          ▼                ▼                                                 │
-│   ┌─────────────┐  ┌─────────────┐                                          │
-│   │  CTC Head   │  │  AR Decoder │  ← Hybrid decoding                       │
-│   │  (Align)    │  │  (Context)  │                                          │
-│   └──────┬──────┘  └──────┬──────┘                                          │
-│          │                │                                                 │
-│          └───────┬────────┘                                                 │
-│                  ▼                                                          │
-│          ┌─────────────────┐                                                │
-│          │   Vietnamese    │                                                │
-│          │     Text        │                                                │
-│          └─────────────────┘                                                │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+RAW VIDEO (.mp4)
+    │
+    ├─→ [Audio Extraction] → Waveform [16kHz]
+    │       ↓
+    │   [Whisper Encoder] → Audio Features [T, 768]
+    │
+    ├─→ [Video Frames] → Mouth ROI Detection
+    │       ↓
+    │   [ResNet18] → Visual Features [T_v, 512]
+    │
+    └─→ [WhisperTokenizer] → Token IDs [L]
+             ↓
+        .pt FILE SAVED
+             ↓
+    ┌────────────────────────┐
+    │   AURORA-XT MODEL      │
+    ├────────────────────────┤
+    │ 1. Audio Proj  [768→512]│
+    │ 2. Visual Proj [512→512]│
+    │ 3. Quality Gate         │
+    │ 4. Conformer (6 layers) │
+    │ 5. Attention Decoder (6)│
+    └────────────────────────┘
+             ↓
+        PREDICTIONS
+```
+
+### **Model Architecture**
+
+```python
+AuroraXT(
+  # Input Projections
+  audio_proj: Linear(768 -> 512)
+  visual_proj: Linear(512 -> 512)
+  
+  # Adaptive Fusion
+  quality_gate: QualityGate()
+  
+  # Encoder: 6x Conformer Blocks
+  encoder: ModuleList(
+    ConformerBlock(d=512, heads=8, kernel=31)
+    × 6
+  )
+  
+  # Decoder: Pure Attention (NO CTC)
+  decoder: AttentionOnlyDecoder(
+    target_embedding: Embedding(51865, 512)
+    pos_encoding: Hybrid (learned + sinusoidal)
+    transformer: 6 layers
+    output_proj: Linear(512 -> 51865)
+  )
+)
+
+Total Parameters: ~120M
 ```
 
 ---
 
-## 🔄 Pipeline Chi Tiết
+## 💻 Yêu Cầu
 
-### 1️⃣ Preprocessing Pipeline
+### **Phần Cứng**
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         PREPROCESSING PIPELINE                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   RAW DATA (ViCocktail TAR files)                                           │
-│   ├── video.mp4                                                             │
-│   └── transcript.txt                                                        │
-│                                                                             │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                      VIDEO PROCESSING                               │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │  1. Load video với Decord                                           │   │
-│   │  2. Sample frames: 25 FPS → MAX 375 frames (15s)                    │   │
-│   │  3. MediaPipe Face Mesh: Extract mouth ROI (96x96)                  │   │
-│   │  4. Normalize: ImageNet mean/std                                    │   │
-│   │  5. Loop padding nếu < 375 frames                                   │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                       AUDIO PROCESSING                              │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │  1. Extract audio: PyAV/FFmpeg                                      │   │
-│   │  2. Resample: → 16kHz mono                                          │   │
-│   │  3. RMS normalize: 0.1 target                                       │   │
-│   │  4. Length: 240,000 samples (15s)                                   │   │
-│   │  5. Loop padding nếu audio ngắn hơn                                 │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                     FEATURE EXTRACTION                              │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │                                                                     │   │
-│   │  VISUAL:                        AUDIO:                              │   │
-│   │  ┌──────────────────┐          ┌──────────────────┐                 │   │
-│   │  │   ResNet-18      │          │  Whisper-Small   │                 │   │
-│   │  │   (Pretrained)   │          │   (Encoder)      │                 │   │
-│   │  │                  │          │                  │                 │   │
-│   │  │  Input:          │          │  Input:          │                 │   │
-│   │  │  [3, 375, 96, 96]│          │  [1, 240000]     │                 │   │
-│   │  │                  │          │                  │                 │   │
-│   │  │  Output:         │          │  Output:         │                 │   │
-│   │  │  [375, 512]      │          │  [~450, 768]     │                 │   │
-│   │  └──────────────────┘          └──────────────────┘                 │   │
-│   │                                                                     │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                       TEXT TOKENIZATION                             │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │  Vietnamese Character Tokenizer (121 tokens)                        │   │
-│   │  - Special: <PAD>, <BOS>, <EOS>, <UNK>, <BLANK>                     │   │
-│   │  - Vietnamese vowels với dấu (á, à, ả, ã, ạ, ...)                   │   │
-│   │  - Basic Latin + Numbers + Punctuation                              │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   OUTPUT: .pt files                                                         │
-│   {                                                                         │
-│       'audio': [T_a, 768],   # Whisper features                             │
-│       'visual': [T_v, 512],  # ResNet features                              │
-│       'text': [L],           # Token IDs                                    │
-│       'text_raw': "..."      # Original text                                │
-│   }                                                                         │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+- **Preprocessing**: GPU T4+ (16GB VRAM)
+- **Training**: GPU A100-40GB (hoặc A100-80GB)
+- **Disk**: ~500GB cho raw data + processed features
 
-### 2️⃣ Training Pipeline
+### **Phần Mềm**
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           TRAINING PIPELINE                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   DATALOADER                                                                │
-│   ├── Load .pt files from manifests                                         │
-│   ├── Dynamic padding per batch                                             │
-│   └── Create attention masks                                                │
-│                                                                             │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                        AURORA-XT MODEL                              │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │                                                                     │   │
-│   │  1. PROJECTION LAYERS                                               │   │
-│   │     Audio: [768] → [256]                                            │   │
-│   │     Visual: [512] → [256]                                           │   │
-│   │                                                                     │   │
-│   │  2. QUALITY GATE (Adaptive Fusion)                                  │   │
-│   │     - Learn per-frame quality scores                                │   │
-│   │     - Weighted combination: α*audio + β*visual                      │   │
-│   │     - Temporal alignment via interpolation                          │   │
-│   │                                                                     │   │
-│   │  3. CONFORMER ENCODER (6 layers)                                    │   │
-│   │     - FFN → MHA → Conv → FFN                                        │   │
-│   │     - Captures acoustic + temporal patterns                         │   │
-│   │                                                                     │   │
-│   │  4. HYBRID DECODER                                                  │   │
-│   │     ┌─────────────┐    ┌─────────────┐                              │   │
-│   │     │  CTC Head   │    │  AR Decoder │                              │   │
-│   │     │  (30% loss) │    │  (70% loss) │                              │   │
-│   │     └─────────────┘    └─────────────┘                              │   │
-│   │                                                                     │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                         HYBRID LOSS                                 │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │                                                                     │   │
-│   │  L_total = α * L_CTC + β * L_CE                                     │   │
-│   │                                                                     │   │
-│   │  - CTC Loss: Alignment learning (không cần alignment labels)        │   │
-│   │  - CE Loss: Language modeling (next token prediction)               │   │
-│   │  - Curriculum: Start CTC-heavy → shift to CE                        │   │
-│   │                                                                     │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                        OPTIMIZATION                                 │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │  - Optimizer: AdamW (lr=3e-4, weight_decay=0.01)                    │   │
-│   │  - Scheduler: CosineAnnealing                                       │   │
-│   │  - Mixed Precision: FP16 (AMP)                                      │   │
-│   │  - Gradient Clipping: 5.0                                           │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3️⃣ Model Components Summary
-
-| Component | Model | Input | Output | Purpose |
-|-----------|-------|-------|--------|---------|
-| **Audio Encoder** | Whisper-Small | Waveform [240k] | [~450, 768] | Extract acoustic features |
-| **Visual Encoder** | ResNet-18 | Frames [375, 96, 96] | [375, 512] | Extract lip features |
-| **Quality Gate** | Learned MLP | Audio + Visual | Weights [T, 2] | Adaptive modality fusion |
-| **Conformer** | 6-layer | Fused [T, 256] | Encoded [T, 256] | Contextual encoding |
-| **CTC Head** | Linear | Encoded | Logits [T, vocab] | Frame-level alignment |
-| **AR Decoder** | 4-layer Transformer | Encoded + Targets | Logits [L, vocab] | Autoregressive decoding |
+- Python 3.10+
+- CUDA 11.8+
+- Modal CLI
+- ffmpeg, libsndfile1
 
 ---
 
 ## 🚀 Cài Đặt
 
-### Yêu Cầu
-- Python 3.10+
-- CUDA 11.8+ (for GPU training)
-- 16GB+ RAM
-- GPU: T4 (inference), A100 (training recommended)
-
-### Cài Đặt Local
+### **1. Clone Repository**
 
 ```bash
-# Clone repository
 git clone https://github.com/AnhVan17/Audio-Visual-Speech-Recognition.git
 cd Audio-Visual-Speech-Recognition
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# hoặc: venv\Scripts\activate  # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install package in development mode
-pip install -e .
 ```
 
-### Cài Đặt Modal (Cloud)
+### **2. Cài Đặt Dependencies (Local)**
 
 ```bash
-# Install Modal
+# Tạo virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Linux/Mac
+# hoặc
+.venv\Scripts\activate  # Windows
+
+# Cài đặt packages
+pip install -r requirements.txt
+```
+
+### **3. Setup Modal**
+
+```bash
+# Cài đặt Modal CLI
 pip install modal
 
-# Setup Modal authentication
-modal setup
+# Authenticate
+modal token new
 
-# Verify
-modal run --help
+# Test connection
+modal run scripts/hello_modal.py
+```
+
+### **4. Upload Data lên Modal Volume**
+
+```bash
+# Tạo volume
+modal volume create avsr-dataset-volume
+
+# Upload raw data
+modal volume put avsr-dataset-volume local_data/ /raw_mirror
 ```
 
 ---
 
-## 📖 Sử Dụng
+## 🔧 Preprocessing
 
-### 1. Preprocessing
+### **Chức Năng**
+
+Preprocessing pipeline thực hiện:
+
+1. **Audio Processing**
+
+   - Extract waveform (16kHz mono)
+   - Pass qua Whisper Encoder (frozen)
+   - Output: `[T, 768]` features
+2. **Visual Processing**
+
+   - Detect mouth ROI (MediaPipe Face Mesh)
+   - Resize to 96x96
+   - Extract ResNet18 features
+   - Output: `[T, 512]`
+3. **Text Tokenization**
+
+   - WhisperProcessor multilingual
+   - Subword tokenization
+   - Output: `[L]` token IDs
+
+### **Chạy Preprocessing Trên Modal**
 
 ```bash
-# Local preprocessing
-python -m src.data.preprocessing \
-    --input_dir ./data/raw_tars \
-    --output_dir ./data/processed_features \
-    --manifest_dir ./data/manifests
-
-# Modal preprocessing (recommended for large datasets)
+# Full pipeline
 modal run scripts/preprocessing_modal.py
+
+# Config trong script:
+# - MAX_TRAIN_TARS = 25  # Số TAR files train
+# - MAX_TEST_TARS = 5    # Số TAR files test
+# - SAMPLES_PER_TAR = None  # Giới hạn samples/TAR (None = all)
 ```
 
-### 2. Training
+### **Output Format**
 
-```bash
-# Local training
-python scripts/training.py --config configs/model/config.yaml
-
-# Modal training (A100 GPU)
-modal run scripts/training_modal.py
-```
-
-### 3. Evaluation
+Mỗi sample được lưu thành `.pt` file:
 
 ```python
-from src.evaluation.evaluator import Evaluator
-from src.data.tokenizer import VietnameseCharTokenizer
-
-tokenizer = VietnameseCharTokenizer()
-evaluator = Evaluator(tokenizer)
-
-# Evaluate on validation set
-results = evaluator.evaluate(model, val_loader, device)
-print(f"WER: {results['wer']:.2f}%")
-print(f"CER: {results['cer']:.2f}%")
+torch.load('sample_000001.pt')
+# {
+#     'id': 'sample_000001',
+#     'audio': Tensor[T, 768],      # Whisper features
+#     'visual': Tensor[T_v, 512],   # ResNet features  
+#     'tokens': Tensor[L],          # Token IDs (subword)
+#     'text': 'xin chào các bạn'    # Raw text
+# }
 ```
+
+### **Manifests**
+
+Sau preprocessing, 3 manifest files được tạo:
+
+```
+/data/manifests/
+  ├── train.jsonl   # Training set
+  ├── val.jsonl     # Validation set (10%)
+  └── test.jsonl    # Test set
+```
+
+Mỗi dòng trong manifest:
+
+```json
+{"id": "sample_001", "path": "processed_features/tar_name/sample_001.pt", "text": "..."}
+```
+
+---
+
+## 🎓 Training
+
+### **Hyperparameters**
+
+```yaml
+model:
+  vocab_size: 51865        # Whisper multilingual
+  d_model: 512             # Hidden dimension
+  num_encoder_layers: 6    # Conformer blocks
+  num_decoder_layers: 6    # Transformer decoder
+  num_heads: 8
+  dropout: 0.2
+
+training:
+  num_epochs: 30
+  learning_rate: 1e-4      # Conservative
+  batch_size: 24           # Per GPU
+  accumulation_steps: 6    # Effective batch = 144
+  label_smoothing: 0.15
+  warmup_ratio: 0.15
+  gradient_clip: 1.0
+  weight_decay: 0.05
+
+loss:
+  ctc_weight: 0.0          # ❌ NO CTC!
+  ce_weight: 1.0           # ✅ Pure Attention
+```
+
+### **Chạy Training Trên Modal**
+
+```bash
+# Single command
+modal run scripts/training_modal.py --config-path configs/model/config.yaml
+
+# Với WandB logging (optional)
+# 1. Tạo Modal secret: modal secret create wandb-secret WANDB_API_KEY=<your-key>
+# 2. Set use_wandb: true trong config.yaml
+```
+
+### **Training Output**
+
+```
+ Epoch 1: 100%|███████| 1338/1338 [45:23<00:00]
+ 📊 Epoch 1: WER=32.45% loss=2.3421
+ 💾 Saved: /checkpoints/best_model.pt
+
+ Epoch 2: 100%|███████| 1338/1338 [45:18<00:00]
+ 📊 Epoch 2: WER=28.12% loss=2.1032
+ 💾 Saved: /checkpoints/best_model.pt
+ 
+ ...
+ 
+ 🎉 Training Complete!
+    Best WER: 18.73%
+    Total Steps: 80,280
+```
+
+### **Checkpoints**
+
+```
+/checkpoints/
+  ├── best_model.pt          # Model với WER thấp nhất
+  ├── final_model.pt         # Model ở epoch cuối
+  ├── checkpoint_epoch_5.pt  # Periodic checkpoints
+  ├── checkpoint_epoch_10.pt
+  └── ...
+```
+
+---
+
+## 🔮 Inference
+
+### **Local Inference**
+
+```python
+from src.models.fusion.aurora_xt_model import create_model
+from src.data.tokenizers.whisper import WhisperProcessor
+import torch
+
+# Load model
+config = {...}  # Load từ config.yaml
+model = create_model(config)
+checkpoint = torch.load('checkpoints/best_model.pt')
+model.load_state_dict(checkpoint['model_state_dict'])
+model.eval()
+
+# Load tokenizer
+processor = WhisperProcessor(model_name="openai/whisper-small", language="vi")
+
+# Inference
+audio_feat = ...  # [T, 768] from Whisper encoder
+visual_feat = ... # [T, 512] from ResNet18
+
+with torch.no_grad():
+    output = model.generate(
+        audio_feat.unsqueeze(0),
+        visual_feat.unsqueeze(0),
+        max_len=150,
+        bos_token_id=processor.bos_token_id,
+        eos_token_id=processor.eos_token_id
+    )
+
+# Decode
+tokens = output['tokens'][0].tolist()
+text = processor.decode(tokens, skip_special_tokens=True)
+print(f"Transcription: {text}")
+```
+
+---
+
+## 📊 Kết Quả
+
+### **Tại Sao Cải Thiện?**
+
+1. **Subword Tokenization**
+
+   - Xử lý tốt hơn từ vựng OOV (out-of-vocabulary)
+   - Tổng quát hóa tốt hơn sang test set
+2. **No CTC**
+
+   - CTC: Alignment frame-to-character (không hoạt động với subword)
+   - Pure Attention: Linh hoạt hơn, học được context tốt hơn
+3. **Larger Model**
+
+   - d_model=512, 6 decoder layers → Capacity cao hơn
+   - Better language modeling
+4. **Whisper Features**
+
+   - Pre-trained trên 680k hours multilingual data
+   - Rich acoustic representation
 
 ---
 
@@ -313,69 +381,71 @@ print(f"CER: {results['cer']:.2f}%")
 ASVR_Viet/
 ├── configs/
 │   └── model/
-│       └── config.yaml          # Training configuration
-├── data/
-│   ├── raw_tars/                # Raw ViCocktail TAR files
-│   ├── processed_features/      # Preprocessed .pt files
-│   └── manifests/               # train/val/test JSONL
-├── scripts/
-│   ├── preprocessing_modal.py   # Modal preprocessing
-│   ├── training.py              # Local training
-│   └── training_modal.py        # Modal training
+│       └── config.yaml           # Training hyperparameters
 ├── src/
 │   ├── data/
-│   │   ├── dataset.py           # PyTorch Dataset & DataLoader
-│   │   ├── preprocessing.py     # Feature extraction pipeline
-│   │   └── tokenizer.py         # Vietnamese tokenizer
+│   │   ├── preprocessing.py      # Feature extraction pipeline
+│   │   ├── dataset.py            # PyTorch Dataset & DataLoader
+│   │   └── tokenizers/
+│   │       └── whisper.py        # WhisperProcessor wrapper
 │   ├── models/
-│   │   ├── aurora_xt.py         # Main model (re-export)
+│   │   ├── aurora_xt.py          # Model factory
 │   │   └── fusion/
-│   │       └── simple.py        # AURORA-XT implementation
+│   │       └── aurora_xt_model.py # Complete model architecture
 │   ├── training/
-│   │   ├── trainer.py           # Training loop
-│   │   └── losses.py            # Hybrid CTC + CE loss
+│   │   ├── trainer.py            # Training loop
+│   │   └── losses.py             # AttentionOnlyLoss
 │   └── evaluation/
-│       ├── evaluator.py         # WER/CER computation
-│       └── metrics.py           # Evaluation metrics
-├── checkpoints/                 # Saved models
-├── requirements.txt
-├── setup.py
-└── README.MD
+│       └── metrics.py            # WER/CER evaluator
+├── scripts/
+│   ├── preprocessing_modal.py    # Modal preprocessing wrapper
+│   ├── training_modal.py         # Modal training wrapper
+│   └── validate_pipeline.py      # Quick validation
+├── tests/                        # Unit tests
+├── requirements.txt              # Python dependencies
+├── .gitignore                    # Git ignore rules
+├── OPTIMIZATION_REPORT.md        # Detailed optimization guide
+└── README.md                     # This file
 ```
 
 ---
 
-## 📊 Kết Quả
+## 📚 Tài Liệu Tham Khảo
 
-### Performance (ViCocktail Dataset)
+### **Papers**
 
-| Epoch | WER (%) | CER (%) | Notes |
-|-------|---------|---------|-------|
-| 5 | ~37% | ~25% |  |
-| 10 | ~32.45% | ~14.60% | |
-| 20 | ~29.49% | ~13.54% | |
+1. Whisper: [Robust Speech Recognition via Large-Scale Weak Supervision](https://arxiv.org/abs/2212.04356)
+2. Conformer: [Conformer: Convolution-augmented Transformer for Speech Recognition](https://arxiv.org/abs/2005.08100)
+3. CTC: [Connectionist Temporal Classification](https://www.cs.toronto.edu/~graves/icml_2006.pdf)
 
-### Training Tips
+### **Datasets**
 
-1. **Batch Size**: 32 for A100, 16 for smaller GPUs
-2. **Learning Rate**: 3e-4 with CosineAnnealing
-3. **Gradient Clipping**: 5.0 (important for CTC stability)
-4. **Mixed Precision**: Always enable for speed
+- [ViCocktail](https://github.com/nhannt315/ViCocktail): Vietnamese Audio-Visual Speech Dataset
 
----
+### **Related Projects**
 
-## 📚 Resources
-
-- **Project Wiki**: [Google Docs](https://docs.google.com/document/d/1THTPq162FbKcZJhWwS3jl_neUeOkKTPHO_uduup8pwc/edit)
-- **Research Notes**: [Google Docs](https://docs.google.com/document/d/1B20ZbUj4u9k7BDbxh7bLlJPX6pzc6TnnRxBtMxdU1Kg/edit)
-- **GitHub Issues**: [Bug Reports](https://github.com/AnhVan17/Audio-Visual-Speech-Recognition/issues)
+- [OpenAI Whisper](https://github.com/openai/whisper)
+- [HuggingFace Transformers](https://github.com/huggingface/transformers)
+- [Modal](https://modal.com/)
 
 ---
 
-## 📄 License
+## 📝 License
 
-MIT License - See [LICENSE](LICENSE) for details.
+MIT License - See [LICENSE](LICENSE) file for details.
+
+---
 
 ## 🤝 Contributors
+
 - **Nguyễn Phạm Anh Văn** - [@AnhVan17](https://github.com/AnhVan17)
 - **Võ Minh Thịnh** - [@finalFlash159](https://github.com/finalFlash159)
+
+## ⭐ Acknowledgments
+
+- OpenAI Whisper team for the pre-trained models
+- Modal team for the serverless infrastructure
+- HuggingFace for the transformers library
+- ViCocktail dataset creators
+
+---
