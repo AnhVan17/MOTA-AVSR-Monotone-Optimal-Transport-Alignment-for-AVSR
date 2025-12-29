@@ -1,116 +1,79 @@
-import os
-import cv2
 import torch
-import whisper
+from torch.utils.data import Dataset
+import json
+import os
 import numpy as np
-from typing import Dict, Optional
-from .base import BaseDataset
 
-class GridDataset(BaseDataset):
-    def __init__(
-        self,
-        manifest_path: str,
-        tokenizer,
-        data_root: str,
-        use_precomputed_features: bool = False,
-        max_samples: Optional[int] = None
-    ):
+class GridDataset(Dataset):
+    """
+    Dataset for GRID Corpus.
+    Supports two modes:
+    1. Precomputed Features (Phase 1): Loads .pt files containing {audio, visual, text}.
+    2. Raw Video (Phase 2): Loads .mpg files and extracts features on-the-fly (TODO).
+    """
+    def __init__(self, manifest_path, tokenizer, data_root, use_precomputed_features=False, max_samples=None):
         self.data_root = data_root
-        self.use_features = use_precomputed_features
-        super().__init__(manifest_path, tokenizer, max_samples)
-    
-    def parse_sample(self, sample_data: Dict) -> Dict:
-        # sample_data comes from the manifest line
-        rel_path = sample_data['rel_path']
-        full_video_path = os.path.join(self.data_root, rel_path)
+        self.tokenizer = tokenizer
+        self.use_precomputed_features = use_precomputed_features
         
-        # 1. Load Audio -> Log-Mel Spectrogram (80, 3000)
-        audio_mel = self._load_audio_mel(full_video_path)
+        # Load manifest
+        print(f"📄 Loading manifest: {manifest_path}")
+        self.data = []
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                self.data.append(json.loads(line.strip()))
         
-        # 2. Load Visual -> Raw Frames OR Precomputed Features
-        if self.use_features:
-            visual_data = self._load_visual_features(full_video_path)
-        else:
-            visual_data = self._load_raw_video(full_video_path)
+        if max_samples:
+            self.data = self.data[:max_samples]
+            print(f" Limiting to {max_samples} samples.")
+            
+        print(f"   Found {len(self.data)} samples.")
 
-        # 3. Load Text -> Parse .align file
-        text = self._get_text_label(full_video_path, sample_data.get('text', ''))
+    def __len__(self):
+        return len(self.data)
 
-        return {
-            'audio': audio_mel,
-            'visual': visual_data,
-            'text': text,
-            'rel_path': rel_path 
-        }
-
-    def _load_audio_mel(self, path: str) -> torch.Tensor:
-        if not os.path.exists(path):
-            return torch.zeros((80, 3000), dtype=torch.float32)
-
-        audio = whisper.load_audio(path)
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        rel_path = item['rel_path'] # Could be .pt or .mpg depending on manifest
+        full_path = os.path.join(self.data_root, rel_path)
         
-        # Pad or trim to 30 seconds (480,000 samples at 16kHz)
-        target_len = 480000
-        if len(audio) < target_len:
-            audio = np.pad(audio, (0, target_len - len(audio)), 'constant')
-        else:
-            audio = audio[:target_len]
-            
-        mel = whisper.log_mel_spectrogram(audio) 
-        return mel
-
-    def _load_raw_video(self, path: str) -> torch.Tensor:
-        cap = cv2.VideoCapture(path)
-        frames = []
-        try:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frame = cv2.resize(frame, (224, 224))
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(frame)
-        finally:
-            cap.release()
-            
-        if not frames:
-            return torch.zeros((1, 3, 224, 224), dtype=torch.float32)
-            
-        tensor = torch.tensor(np.array(frames), dtype=torch.float32)
-        tensor = tensor.permute(0, 3, 1, 2) # (T, H, W, C) -> (T, C, H, W)
-        return tensor / 255.0
-
-    def _load_visual_features(self, video_path: str) -> torch.Tensor:
-        # Path Logic: s1/video/xyz.mpg -> s1/features/xyz.npy
-        feat_path = video_path.replace(".mpg", ".npy").replace("video", "features")
+        text = item.get('text', "")
         
-        if not os.path.exists(feat_path):
-            feat_path = video_path.replace(".mpg", ".npy")
+        # Tokenize Text
+        # Output: (L,) tensor
+        token_ids = self.tokenizer.encode(text)
+        target = torch.tensor(token_ids, dtype=torch.long)
+        
+        if self.use_precomputed_features:
+            # Phase 1: Load .pt feature file
+            # If manifest points to .mpg, swap ext
+            if full_path.endswith('.mpg'):
+                full_path = full_path.replace('.mpg', '.pt')
             
-        if not os.path.exists(feat_path):
-            raise FileNotFoundError(f"Feature file not found: {feat_path}")
-            
-        return torch.from_numpy(np.load(feat_path)).float()
-
-    def _get_text_label(self, video_path: str, fallback_text: str) -> str:
             try:
-                parent_dir = os.path.dirname(video_path) # .../s1_processed
-                filename = os.path.basename(video_path)  # bbaf2n.mpg
-                align_filename = filename.replace(".mpg", ".align") # bbaf2n.align
+                data = torch.load(full_path)
+                # data is dict: {'visual': (T, 512), 'audio': (T, 768), 'text': str, ...}
                 
-                align_path = os.path.join(parent_dir, "align", align_filename)
+                visual = data['visual'].float() # [T_v, 512]
+                audio = data['audio'].float()   # [T_a, 768]
                 
-                if os.path.exists(align_path):
-                    words = []
-                    with open(align_path, 'r') as f:
-                        for line in f:
-                            parts = line.strip().split()
-                            if len(parts) >= 3:
-                                word = parts[2]
-                                if word not in ['sil', 'sp']:
-                                    words.append(word)
-                    return " ".join(words)
-            except Exception:
-                pass 
-
-            return fallback_text
+                return {
+                    'audio': audio,
+                    'visual': visual,
+                    'target': target,
+                    'text': text,
+                    'rel_path': rel_path
+                }
+            except Exception as e:
+                print(f"❌ Error loading {full_path}: {e}")
+                # Return dummy
+                return {
+                    'audio': torch.zeros(300, 768),
+                    'visual': torch.zeros(75, 512),
+                    'target': target,
+                    'text': text,
+                    'rel_path': rel_path
+                }
+        else:
+            # Phase 2: Raw Video Loading (To be implemented or migrated from legacy)
+            raise NotImplementedError("Phase 2 (Raw Video) loading not yet implemented in GridDataset.")

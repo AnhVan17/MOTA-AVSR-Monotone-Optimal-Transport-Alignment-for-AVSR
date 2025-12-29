@@ -13,10 +13,10 @@ def test_imports():
     from src.utils import load_config, set_seed, save_checkpoint
     print("  ✓ utils.py")
     
-    from src.data.tokenizer import VietnameseCharTokenizer
+    from data.tokenizer_old import VietnameseCharTokenizer
     print("  ✓ tokenizer.py")
     
-    from src.data.dataset import create_dataloaders, AuroraDataset
+    from data.dataset_old import create_dataloaders, AuroraDataset
     print("  ✓ dataset.py")
     
     from src.training.losses import create_loss, HybridLoss
@@ -106,7 +106,7 @@ def test_loss():
 
 def test_tokenizer():
     """Test tokenizer"""
-    from src.data.tokenizer import VietnameseCharTokenizer
+    from data.tokenizer_old import VietnameseCharTokenizer
     
     print("\nTesting tokenizer...")
     
@@ -126,7 +126,7 @@ def test_tokenizer():
 
 def test_dataset_path():
     """Test dataset path resolution"""
-    from src.data.dataset import AuroraDataset
+    from data.dataset_old import AuroraDataset
     from pathlib import Path
     
     print("\nTesting dataset path resolution...")

@@ -106,7 +106,7 @@ class DataProcessor:
         sys.path.insert(0, "/root")
         
         # Import shared pipeline
-        from src.data.preprocessing import PreprocessingConfig, PreprocessingPipeline
+        from data.preprocessing import PreprocessingConfig, PreprocessingPipeline
         
         # Config for Modal
         class ModalConfig(PreprocessingConfig):

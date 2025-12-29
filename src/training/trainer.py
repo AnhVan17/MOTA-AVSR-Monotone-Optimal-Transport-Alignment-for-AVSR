@@ -14,8 +14,8 @@ from tqdm import tqdm
 import logging
 
 # Absolute imports - works both local and Modal
-from src.data.tokenizer import VietnameseCharTokenizer
-from src.data.dataset import create_dataloaders
+from data.tokenizer_old import VietnameseCharTokenizer
+from data.dataset_old import create_dataloaders
 from src.models.aurora_xt import create_model
 from src.training.losses import create_loss
 from src.evaluation.evaluator import Evaluator

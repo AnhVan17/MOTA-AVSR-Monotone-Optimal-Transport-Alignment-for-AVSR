@@ -42,10 +42,10 @@ def build_dataloader(
         # unless you specifically want to validate on features.
         use_features = config.get('use_precomputed_features', False)
         
-    else:
+    else: 
         raise ValueError(f"Invalid mode: {mode}. Expected 'train', 'val', or 'test'.")
 
-    print(f"🔨 Building DataLoader [{mode}]")
+    print(f" Building DataLoader [{mode}]")
     print(f"   - Manifest: {manifest_path}")
     print(f"   - Input Type: {'Precomputed Features (.npy)' if use_features else 'Raw Video (.mpg)'}")
     print(f"   - Batch Size: {config['batch_size']}")

@@ -24,6 +24,8 @@ class WhisperTokenizer:
         self.bos_token_id = self.tokenizer.bos_token_id
         self.eos_token_id = self.tokenizer.eos_token_id
         self.unk_token_id = self.tokenizer.unk_token_id
+        self.sot_token_id = self.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+        self.eot_token_id = self.tokenizer.convert_tokens_to_ids("<|endoftranscript|>")
 
         print(f"WhisperTokenizer initialized")
         print(f"   Vocab size: {self.vocab_size}")

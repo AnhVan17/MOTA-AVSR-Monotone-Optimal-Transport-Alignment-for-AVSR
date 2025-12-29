@@ -7,7 +7,7 @@ transformers>=4.36.0
 timm>=0.9.12
 huggingface-hub>=0.20.0
 
-decord>=0.6.0
+# decord>=0.6.0
 av>=11.0.0
 soundfile>=0.12.1
 opencv-python-headless>=4.9.0
