@@ -1,79 +1,59 @@
-import torch
-from torch.utils.data import Dataset
-import json
-import os
-import numpy as np
+"""
+GRID Dataset for AVSR Training
+================================
+Inherits from BaseDataset for clean architecture.
+"""
 
-class GridDataset(Dataset):
+import os
+import torch
+from .base import FeatureDataset
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger(__name__)
+
+
+class GridDataset(FeatureDataset):
     """
     Dataset for GRID Corpus.
-    Supports two modes:
-    1. Precomputed Features (Phase 1): Loads .pt files containing {audio, visual, text}.
-    2. Raw Video (Phase 2): Loads .mpg files and extracts features on-the-fly (TODO).
+    
+    Inherits from FeatureDataset which handles .pt file loading.
+    For Phase 2 (raw video), use RawVideoDataset or extend this class.
     """
-    def __init__(self, manifest_path, tokenizer, data_root, use_precomputed_features=False, max_samples=None):
-        self.data_root = data_root
-        self.tokenizer = tokenizer
-        self.use_precomputed_features = use_precomputed_features
+    
+    def __init__(
+        self, 
+        manifest_path: str, 
+        tokenizer,
+        data_root: str,
+        use_precomputed_features: bool = True,
+        max_samples: int = None,
+        augment: bool = False,
+        aug_cfg: dict = None
+    ):
+        """
+        Args:
+            manifest_path: Path to JSONL manifest
+            tokenizer: WhisperTokenizer instance
+            data_root: Root directory containing .pt files
+            use_precomputed_features: Must be True for Phase 1
+            max_samples: Limit samples for debugging
+            augment: Whether to apply feature augmentation
+            aug_cfg: Augmentation configuration dict
+        """
+        if not use_precomputed_features:
+            raise NotImplementedError(
+                "GridDataset currently only supports Phase 1 (precomputed features). "
+                "Set use_precomputed_features=True."
+            )
         
-        # Load manifest
-        print(f"📄 Loading manifest: {manifest_path}")
-        self.data = []
-        with open(manifest_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                self.data.append(json.loads(line.strip()))
+        super().__init__(
+            manifest_path=manifest_path,
+            tokenizer=tokenizer,
+            data_root=data_root,
+            use_precomputed_features=use_precomputed_features,
+            max_samples=max_samples,
+            augment=augment,
+            aug_cfg=aug_cfg
+        )
         
-        if max_samples:
-            self.data = self.data[:max_samples]
-            print(f" Limiting to {max_samples} samples.")
-            
-        print(f"   Found {len(self.data)} samples.")
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        item = self.data[idx]
-        rel_path = item['rel_path'] # Could be .pt or .mpg depending on manifest
-        full_path = os.path.join(self.data_root, rel_path)
-        
-        text = item.get('text', "")
-        
-        # Tokenize Text
-        # Output: (L,) tensor
-        token_ids = self.tokenizer.encode(text)
-        target = torch.tensor(token_ids, dtype=torch.long)
-        
-        if self.use_precomputed_features:
-            # Phase 1: Load .pt feature file
-            # If manifest points to .mpg, swap ext
-            if full_path.endswith('.mpg'):
-                full_path = full_path.replace('.mpg', '.pt')
-            
-            try:
-                data = torch.load(full_path)
-                # data is dict: {'visual': (T, 512), 'audio': (T, 768), 'text': str, ...}
-                
-                visual = data['visual'].float() # [T_v, 512]
-                audio = data['audio'].float()   # [T_a, 768]
-                
-                return {
-                    'audio': audio,
-                    'visual': visual,
-                    'target': target,
-                    'text': text,
-                    'rel_path': rel_path
-                }
-            except Exception as e:
-                print(f"❌ Error loading {full_path}: {e}")
-                # Return dummy
-                return {
-                    'audio': torch.zeros(300, 768),
-                    'visual': torch.zeros(75, 512),
-                    'target': target,
-                    'text': text,
-                    'rel_path': rel_path
-                }
-        else:
-            # Phase 2: Raw Video Loading (To be implemented or migrated from legacy)
-            raise NotImplementedError("Phase 2 (Raw Video) loading not yet implemented in GridDataset.")
+        logger.debug(f"GridDataset initialized with {len(self)} samples")

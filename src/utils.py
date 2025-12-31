@@ -4,6 +4,9 @@ import random
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger(__name__)
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -47,7 +50,8 @@ def save_checkpoint(
     }
     
     torch.save(checkpoint, checkpoint_dir / filename)
-    print(f"💾 Checkpoint saved: {checkpoint_dir / filename}")
+    torch.save(checkpoint, checkpoint_dir / filename)
+    logger.info(f"💾 Checkpoint saved: {checkpoint_dir / filename}")
 
 
 def load_checkpoint(
@@ -67,8 +71,8 @@ def load_checkpoint(
     if scheduler and 'scheduler_state_dict' in checkpoint and checkpoint['scheduler_state_dict']:
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
     
-    print(f" Checkpoint loaded from: {checkpoint_path}")
-    print(f"   Epoch: {checkpoint['epoch']}, Step: {checkpoint['step']}")
+    logger.info(f" Checkpoint loaded from: {checkpoint_path}")
+    logger.info(f"   Epoch: {checkpoint['epoch']}, Step: {checkpoint['step']}")
     
     return checkpoint
 

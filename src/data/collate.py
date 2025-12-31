@@ -5,13 +5,13 @@ from typing import List, Dict
 def collate_fn(batch: List[Dict]) -> Dict:
     """
     Custom collate function for AVSR (Audio-Visual Speech Recognition).
-    Handles padding for variable-length visual inputs and text targets.
+    Handles padding for variable-length audio, visual inputs and text targets.
 
     Args:
         batch (List[Dict]): A list of samples from the Dataset. 
                             Each sample dict contains:
-                            - 'audio': (80, 3000)
-                            - 'visual': (T, C, H, W) or (T, Feature_Dim)
+                            - 'audio': (T_a, 768) - Whisper encoder features
+                            - 'visual': (T_v, 512) - ResNet features
                             - 'target': (L,) -> Token IDs
                             - 'text': str
                             - 'rel_path': str
@@ -19,51 +19,52 @@ def collate_fn(batch: List[Dict]) -> Dict:
     Returns:
         Dict: A batched dictionary ready for the model.
     """
+    batch_size = len(batch)
     
-    # 1. Process Audio
-    # Since Whisper requires fixed input (30s), audio is already (80, 3000).
-    # We just stack them: (Batch_Size, 80, 3000)
-    audio_batch = torch.stack([s['audio'] for s in batch])
+    # 1. Process Audio (variable length from Whisper encoder)
+    audio_list = [s['audio'] for s in batch]
+    audio_batch = pad_sequence(audio_list, batch_first=True, padding_value=0.0)
     
-    # 2. Process Visual
-    # Visual frames/features have variable length T. We need to pad them.
+    # Audio mask
+    max_audio_len = audio_batch.size(1)
+    audio_mask = torch.zeros((batch_size, max_audio_len), dtype=torch.bool)
+    for i, a in enumerate(audio_list):
+        audio_mask[i, :a.size(0)] = True
+    
+    # 2. Process Visual (variable length)
     visual_list = [s['visual'] for s in batch]
-    
-    # Pad sequence with 0.0. 
-    # batch_first=True makes output (Batch, T_max, ...)
     visual_batch = pad_sequence(visual_list, batch_first=True, padding_value=0.0)
     
-    # Create Attention Mask / Time Mask for Visual inputs
-    # 1 (True) = Real frame, 0 (False) = Padding
-    # Shape: (Batch_Size, T_max)
-    batch_size = len(batch)
+    # Visual mask
     max_visual_len = visual_batch.size(1)
     visual_mask = torch.zeros((batch_size, max_visual_len), dtype=torch.bool)
-    
     for i, v in enumerate(visual_list):
-        # Mark valid frames as True
         visual_mask[i, :v.size(0)] = True
         
     # 3. Process Targets (Labels)
-    # Token sequences also have variable lengths.
-    # Use padding_value = -100 (PyTorch CrossEntropyLoss ignore_index)
     if 'target' in batch[0]:
         target_list = [s['target'] for s in batch]
-        target_batch = pad_sequence(target_list, batch_first=True, padding_value=-100)
+        target_batch = pad_sequence(target_list, batch_first=True, padding_value=0)
+        
+        # Target mask (1 = valid, 0 = padding)
+        target_mask = torch.zeros((batch_size, target_batch.size(1)), dtype=torch.bool)
+        for i, t in enumerate(target_list):
+            target_mask[i, :t.size(0)] = True
     else:
-        # Fallback if target is missing (e.g., inference mode without labels)
         target_batch = None
+        target_mask = None
 
     # 4. Collect Metadata
-    # Useful for debugging or calculating PER/WER later
     texts = [s.get('text', '') for s in batch]
     rel_paths = [s.get('rel_path', '') for s in batch]
     
     return {
-        'audio': audio_batch,       # (B, 80, 3000)
-        'visual': visual_batch,     # (B, T_max, C, H, W) or (B, T_max, 512)
-        'visual_mask': visual_mask, # (B, T_max)
+        'audio': audio_batch,       # (B, T_a_max, 768)
+        'visual': visual_batch,     # (B, T_v_max, 512)
+        'audio_mask': audio_mask,   # (B, T_a_max)
+        'visual_mask': visual_mask, # (B, T_v_max)
         'target': target_batch,     # (B, L_max)
+        'target_mask': target_mask, # (B, L_max)
         'text': texts,              # List[str]
         'rel_paths': rel_paths      # List[str]
     }

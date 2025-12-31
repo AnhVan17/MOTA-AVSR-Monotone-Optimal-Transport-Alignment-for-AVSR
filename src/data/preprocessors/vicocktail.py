@@ -1,10 +1,20 @@
 import os
 import glob
 from .base import BasePreprocessor
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger(__name__)
+
+try:
+    from src.utils.text_cleaning import normalize_text
+except ImportError:
+    import sys
+    sys.path.append(os.getcwd())
+    from src.utils.text_cleaning import normalize_text
 
 class ViCocktailPreprocessor(BasePreprocessor):
     def collect_metadata(self):
-        print(f"   [ViCocktail] Scanning for files in {self.data_root}...")
+        logger.info(f"[ViCocktail] Scanning for files in {self.data_root}...")
         
         # Scan for common video formats
         video_extensions = ['*.mp4', '*.webm', '*.mkv', '*.avi']
@@ -41,7 +51,8 @@ class ViCocktailPreprocessor(BasePreprocessor):
         if os.path.exists(txt_path):
             try:
                 with open(txt_path, 'r', encoding='utf-8') as f:
-                    return f.read().strip()
+                    content = f.read().strip()
+                    return normalize_text(content)
             except:
                 pass
                 

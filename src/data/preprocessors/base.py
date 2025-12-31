@@ -11,20 +11,33 @@ import random
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset
 from transformers import WhisperModel, WhisperFeatureExtractor
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger(__name__)
+
+try:
+    from src.utils.text_cleaning import normalize_text
+except ImportError:
+    # Fallback if running outside package context
+    import sys
+    sys.path.append(os.getcwd())
+    from src.utils.text_cleaning import normalize_text
         
 
 class PreprocessConfig:
-    # Visual Params
-    IMAGE_SIZE = 96        # Mouth crop size
-    RESNET_INPUT_SIZE = 224 # ResNet18 input size
+    # Visual Params (SOTA: 88x88)
+    IMAGE_SIZE = 88        # Mouth crop size (SOTA standard)
+    RESNET_INPUT_SIZE = 88 # Changed from 224 to 88 (SOTA)
+    USE_GRAYSCALE = False  # RGB for pretrained ResNet (existing videos are RGB)
     
     # Audio Params
     AUDIO_SAMPLE_RATE = 16000
     AUDIO_LENGTH = 240000 # 15s * 16000
     
     # System Params
-    BATCH_SIZE = 64
+    BATCH_SIZE = 256       # Increased for A100 (40-80GB VRAM)
     NUM_WORKERS = 8 # Increase workers for parallel FaceMesh processing
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -74,13 +87,68 @@ class VideoProcessor:
                 else:
                     crop, prev_bbox = self.extract_mouth(frame, prev_bbox)
             
-            # Resize to 224x224 for ResNet18
+            # Resize to 88x88 (SOTA standard)
             crop = cv2.resize(crop, (PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE)) 
-            crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            
+            # Convert to grayscale (SOTA: grayscale for lip reading)
+            if PreprocessConfig.USE_GRAYSCALE:
+                crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            else:
+                crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
             processed_frames.append(crop)
 
-        # (T, H, W, C) -> (T, C, H, W) -> Normalize [0, 1]
-        return torch.tensor(np.array(processed_frames), dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
+        # Convert to tensor
+        frames_np = np.array(processed_frames)
+        if PreprocessConfig.USE_GRAYSCALE:
+            # Grayscale: (T, H, W) -> (T, 1, H, W)
+            video_tensor = torch.tensor(frames_np, dtype=torch.float32).unsqueeze(1) / 255.0
+        else:
+            # RGB: (T, H, W, C) -> (T, C, H, W)
+            video_tensor = torch.tensor(frames_np, dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
+            
+        # LOOP PADDING if video is short (better than zero-padding for learning)
+        # Assuming we might want a fixed length or at least handle very short clips
+        # For now, let's just expose the loop pad method but maybe not force it 
+        # unless MAX_FRAMES is defined. The current logic in PreprocessConfig 
+        # doesn't strictly enforce MAX_FRAMES for visual yet, but let's add the method.
+        
+        return video_tensor
+
+    def _loop_pad_video(self, video_tensor: torch.Tensor, target_frames: int) -> torch.Tensor:
+        """
+        Loop pad video frames instead of zero padding.
+        This helps model learn better from short videos.
+        
+        Args:
+            video_tensor: [C, T, H, W] video tensor
+            target_frames: Target number of frames
+            
+        Returns:
+            Padded video tensor [C, target_frames, H, W]
+        """
+        if video_tensor.dim() == 4: # [T, C, H, W] or [C, T, H, W] ?
+            # Based on above process() return:
+            # RGB: [T, C, H, W] (from permute(0,3,1,2) on (T,H,W,C)) -> Wait.
+            # np array is (T, H, W, C).
+            # permute(0, 3, 1, 2) -> (T, C, H, W). 
+            # Usually PyTorch models expect (B, C, T, H, W) or (B, T, C, H, W).
+            # ResNet expects (B, C, H, W). We process frame by frame.
+            pass
+            
+        # NOTE: The user script output [C, T, H, W]. 
+        # My current code outputs [T, C, H, W].
+        # Let's check VisualFeatureExtractor. It takes (B, C, H, W).
+        # In run() loop:
+        # batch = video_tensor[i : i + BATCH] -> Slices T dimension.
+        # So video_tensor MUST be [T, C, H, W].
+        
+        T = video_tensor.size(0)
+        if T >= target_frames:
+            return video_tensor[:target_frames]
+        
+        repeats = (target_frames // T) + 1
+        looped = video_tensor.repeat(repeats, 1, 1, 1) # Repeat along T
+        return looped[:target_frames]
 
     def extract_mouth(self, frame, prev_bbox=None):
         """Mouth cropping logic using MediaPipe"""
@@ -142,7 +210,7 @@ class AudioFeatureExtractor:
         self.whisper_processor = WhisperFeatureExtractor.from_pretrained(
             "openai/whisper-small"
         )
-        print(f"Loaded {self.audio_model} on {PreprocessConfig.DEVICE}")
+        logger.debug(f"Loaded {self.audio_model} on {PreprocessConfig.DEVICE}")
         
     def process_file(self, video_path):
         """Extract audio waveform then features from video file"""
@@ -152,7 +220,16 @@ class AudioFeatureExtractor:
         return self.extract_features(waveform)
 
     def extract_waveform(self, video_path):
-        """Use FFmpeg via subprocess to extract audio directly"""
+        """Use PyAV then FFmpeg to extract audio"""
+        # 1. Try PyAV (Robust)
+        try:
+            waveform = self._try_pyav(video_path)
+            if waveform is not None:
+                return waveform
+        except Exception:
+            pass
+            
+        # 2. Fallback to FFmpeg (subprocess)
         try:
             import subprocess
             
@@ -180,7 +257,44 @@ class AudioFeatureExtractor:
             return self._normalize_pad(torch.from_numpy(waveform).unsqueeze(0))
             
         except Exception as e:
-            # print(f"Audio extract failed for {video_path}: {e}")
+            # logger.error(f"Audio extract failed for {video_path}: {e}")
+            return None
+
+    def _try_pyav(self, video_path) -> torch.Tensor:
+        """Extract audio using PyAV"""
+        try:
+            import av
+            container = av.open(video_path)
+            audio_stream = next((s for s in container.streams.audio), None)
+            
+            if not audio_stream:
+                container.close()
+                return None
+            
+            resampler = av.AudioResampler(
+                format='s16p',
+                layout='mono',
+                rate=PreprocessConfig.AUDIO_SAMPLE_RATE
+            )
+            
+            frames = []
+            for frame in container.decode(audio_stream):
+                for resampled in resampler.resample(frame):
+                    frames.append(resampled.to_ndarray().flatten())
+            
+            container.close()
+            
+            if not frames:
+                return None
+            
+            waveform = np.concatenate(frames)
+            waveform = torch.from_numpy(waveform).float() / 32768.0
+            
+            return self._normalize_pad(waveform.unsqueeze(0))
+        except ImportError:
+            # logger.warning("PyAV not installed")
+            return None
+        except Exception:
             return None
 
     def _normalize_pad(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -189,21 +303,24 @@ class AudioFeatureExtractor:
         if rms > 1e-8:
             waveform = waveform * (0.1 / rms)
         
-        # Trim to AUDIO_LENGTH (for fixed length inputs like Whisper training needs 30s)
-        # However, for FEATURE EXTRACTION of 'whisper-small', 
-        # the model can handle shorter inputs if using the processor correctly with padding.
-        # But for AVSR consistency, we often pad/trim. Let's keep loop pad for now.
-        
         cur_len = waveform.size(1)
-        if cur_len < PreprocessConfig.AUDIO_LENGTH:
-            # Loop pad
-            repeats = (PreprocessConfig.AUDIO_LENGTH // cur_len) + 1
-            looped = waveform.repeat(1, repeats)
-            waveform = looped[:, :PreprocessConfig.AUDIO_LENGTH]
-        else:
-            waveform = waveform[:, :PreprocessConfig.AUDIO_LENGTH]
+        target_len = PreprocessConfig.AUDIO_LENGTH
         
-        return waveform
+        if cur_len < target_len:
+            # Loop pad (Context preservation)
+            return self._loop_pad_audio(waveform, target_len)
+        else:
+            return waveform[:, :target_len]
+
+    def _loop_pad_audio(self, waveform: torch.Tensor, target_length: int) -> torch.Tensor:
+        """Loop pad audio to target length"""
+        cur_len = waveform.size(1)
+        if cur_len == 0:
+            return torch.zeros(1, target_length)
+            
+        repeats = (target_length // cur_len) + 1
+        looped = waveform.repeat(1, repeats)
+        return looped[:, :target_length]
 
     @torch.no_grad()
     def extract_features(self, waveform: torch.Tensor) -> torch.Tensor:
@@ -235,7 +352,15 @@ class VisualFeatureExtractor(torch.nn.Module):
     def __init__(self):
         super().__init__()
         # ResNet18 (Visual Encoder)
-        self.backbone = timm.create_model('resnet18', pretrained=True, num_classes=0, global_pool='')
+        # in_chans=1 for grayscale input (SOTA), in_chans=3 for RGB
+        in_channels = 1 if PreprocessConfig.USE_GRAYSCALE else 3
+        self.backbone = timm.create_model(
+            'resnet18', 
+            pretrained=True, 
+            num_classes=0, 
+            global_pool='',
+            in_chans=in_channels  # Support grayscale input
+        )
         self.pool = torch.nn.AdaptiveAvgPool2d((1, 1))
         self.to(PreprocessConfig.DEVICE).eval()
 
@@ -271,37 +396,177 @@ def collate_video_wrapper(batch):
     return [item[0] for item in batch], [item[1] for item in batch]
 
 
-# --- 5. BASE PREPROCESSOR ---
+# --- 5. KEY FRAME EXTRACTOR (Shared - Dataset Agnostic) ---
+
+class KeyFrameExtractor:
+    """
+    Extract key frames from cropped video.
+    Removes redundant similar frames to reduce data size and speed up training.
+    Works with ANY dataset - only needs a cropped video as input.
+    """
+    
+    def __init__(self, threshold: float = 30.0, max_frames: int = 75, min_frames: int = 10):
+        """
+        Args:
+            threshold: Minimum pixel difference to consider a frame as "key" (0-255 scale)
+            max_frames: Maximum number of frames to keep
+            min_frames: Minimum frames to ensure (even if similar)
+        """
+        self.threshold = threshold
+        self.max_frames = max_frames
+        self.min_frames = min_frames
+    
+    def extract_from_video(self, video_path: str) -> np.ndarray:
+        """
+        Extract key frames from video file.
+        
+        Returns:
+            np.ndarray: Shape (N, H, W, C) where N is number of key frames
+        """
+        cap = cv2.VideoCapture(video_path)
+        frames = []
+        
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frames.append(frame)
+        finally:
+            cap.release()
+        
+        if not frames:
+            return np.array([])
+        
+        return self._select_key_frames(frames)
+    
+    def _select_key_frames(self, frames: list) -> np.ndarray:
+        """Select key frames based on frame difference."""
+        if len(frames) <= self.min_frames:
+            return np.array(frames)
+        
+        key_indices = [0]  # Always keep first frame
+        prev_frame = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        
+        for i in range(1, len(frames)):
+            curr_frame = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY).astype(np.float32)
+            diff = np.mean(np.abs(curr_frame - prev_frame))
+            
+            if diff > self.threshold:
+                key_indices.append(i)
+                prev_frame = curr_frame
+        
+        # Always include last frame
+        if key_indices[-1] != len(frames) - 1:
+            key_indices.append(len(frames) - 1)
+        
+        # Ensure minimum frames by sampling
+        if len(key_indices) < self.min_frames:
+            step = len(frames) // self.min_frames
+            key_indices = list(range(0, len(frames), max(1, step)))[:self.min_frames]
+        
+        # Limit to max frames
+        if len(key_indices) > self.max_frames:
+            step = len(key_indices) // self.max_frames
+            key_indices = key_indices[::max(1, step)][:self.max_frames]
+        
+        return np.array([frames[i] for i in sorted(set(key_indices))])
+    
+    def save_as_tensor(self, frames: np.ndarray, output_path: str):
+        """
+        Save key frames as a PyTorch tensor file (.pt).
+        
+        Args:
+            frames: Shape (N, H, W, C) - BGR format from OpenCV
+            output_path: Path to save .pt file
+        """
+        if len(frames) == 0:
+            torch.save(torch.zeros((1, 3, PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE)), output_path)
+            return
+        
+        # Resize and convert: (N, H, W, C) BGR -> (N, C, H, W) RGB normalized
+        processed = []
+        for frame in frames:
+            resized = cv2.resize(frame, (PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE))
+            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            processed.append(rgb)
+        
+        tensor = torch.tensor(np.array(processed), dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
+        torch.save(tensor, output_path)
+    
+    def save_as_images(self, frames: np.ndarray, output_dir: str):
+        """
+        Save key frames as individual JPEG images.
+        
+        Args:
+            frames: Shape (N, H, W, C)
+            output_dir: Directory to save images
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        
+        for i, frame in enumerate(frames):
+            resized = cv2.resize(frame, (PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE))
+            output_path = os.path.join(output_dir, f"frame_{i:04d}.jpg")
+            cv2.imwrite(output_path, resized)
+
+
+# --- 6. BASE PREPROCESSOR ---
 
 class BasePreprocessor(ABC):
+    """Abstract base class for dataset-specific preprocessors."""
+    
     def __init__(self, data_root, use_precropped=False):
         self.data_root = data_root
         self.use_precropped = use_precropped
         
-        # Load Extractors
-        print(f"Initializing Extractors on {PreprocessConfig.DEVICE}...")
-        self.visual_extractor = VisualFeatureExtractor()
-        self.audio_extractor = AudioFeatureExtractor()
-        print(f"Initialized {self.__class__.__name__}")
+        # Lazy Loading: Don't load models yet
+        self.visual_extractor = None
+        self.audio_extractor = None
+        logger.info(f"Initialized {self.__class__.__name__} (Lazy Load)")
+
+    def _load_models(self):
+        """Helper to load heavy models only when needed"""
+        if self.visual_extractor is None:
+            logger.info(f"Loading Extractors on {PreprocessConfig.DEVICE}...")
+            self.visual_extractor = VisualFeatureExtractor()
+            self.audio_extractor = AudioFeatureExtractor()
+            logger.info("Models Loaded.")
 
     @abstractmethod
     def collect_metadata(self):
         """Should return list of dict: {'full_path', 'rel_path', 'text'}"""
         pass
 
-    def run(self, output_manifest="manifest.jsonl", extract_features=True):
-        print("Collecting metadata...")
+    def run(self, output_manifest="manifest.jsonl", output_dir=None, extract_features=True):
+        """
+        Run preprocessing pipeline.
+        
+        Args:
+            output_manifest: Path to save the manifest file
+            output_dir: Directory to save .pt feature files. If None, saves next to input videos.
+            extract_features: Whether to extract and save features
+        """
+        logger.info("Collecting metadata...")
         metadata = self.collect_metadata()
-        print(f"   Found {len(metadata)} samples.")
+        logger.info(f"   Found {len(metadata)} samples.")
 
         if not metadata: return
+        
+        # Store output_dir for use in processing
+        self.output_dir = output_dir
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            logger.info(f"   Output directory: {output_dir}")
 
         # Optimization: Create a map for O(1) access
         metadata_map = {m['full_path']: m for m in metadata}
 
         # 1. Extract Features
         if extract_features:
-            print("Running Multimodal Extraction (Audio + Visual)...")
+            # LOAD MODELS NOW
+            self._load_models()
+            
+            logger.info("Running Multimodal Extraction (Audio + Visual)...")
             video_paths = [m['full_path'] for m in metadata]
             
             # Use DataLoader for Visual (Frames are heavy, supports Batching)
@@ -316,13 +581,13 @@ class BasePreprocessor(ABC):
             # Iterate through videos
             count = 0
             total = len(dataset)
-            print(f"Starting processing loop for {total} items...")
+            logger.info(f"Starting processing loop for {total} items...")
             
             for videos, paths in tqdm(loader, desc="Processing"):
                 for video_tensor, video_path in zip(videos, paths):
                     count += 1
                     if count % 100 == 0 or count == 1:
-                        print(f"   [{count}/{total}] Processing {video_path}...")
+                        logger.info(f"   [{count}/{total}] Processing {video_path}...")
                     try:
                         # A. Visual Features
                         video_tensor = video_tensor.to(PreprocessConfig.DEVICE)
@@ -354,15 +619,25 @@ class BasePreprocessor(ABC):
                             'path': video_path # Original path
                         }
                         
-                        save_path = video_path.replace(".mpg", ".pt").replace(".mp4", ".pt").replace(".webm", ".pt")
+                        # Determine save path
+                        if self.output_dir:
+                            # Use output_dir, preserve relative structure
+                            rel_path = item.get('rel_path', os.path.basename(video_path))
+                            pt_filename = os.path.splitext(rel_path)[0] + ".pt"
+                            save_path = os.path.join(self.output_dir, pt_filename)
+                            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                        else:
+                            # Save next to original video
+                            save_path = video_path.replace(".mpg", ".pt").replace(".mp4", ".pt").replace(".webm", ".pt")
+                        
                         torch.save(save_dict, save_path)
                         count += 1
                         
                     except Exception as e:
-                        print(f"FAILED {video_path}: {e}")
+                        logger.error(f"FAILED {video_path}: {e}")
 
         # 2. Save Manifest
-        print(f"Saving manifest to {output_manifest}...")
+        logger.info(f"Saving manifest to {output_manifest}...")
         with open(output_manifest, 'w', encoding='utf-8') as f:
             for item in metadata:
                 # Update output path to be the .pt file
@@ -377,4 +652,4 @@ class BasePreprocessor(ABC):
                     # "video_path": item['rel_path']
                 }
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        print("Done!")
+        logger.info("Done!")

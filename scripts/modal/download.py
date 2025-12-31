@@ -1,6 +1,11 @@
 import modal
 import os
 import time
+import logging
+
+# Configure basic logging since this script acts as a standalone entry point
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("download_script")
 
 APP_NAME = "avsr-dataset-downloader"
 VOLUME_NAME = "avsr-dataset-volume"
@@ -28,8 +33,8 @@ volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 def download_dataset_snapshot():
     from huggingface_hub import snapshot_download
 
-    print(" BẮT ĐẦU TẢI TOÀN BỘ DATASET VỀ VOLUME...")
-    print("ℹChế độ: Mirror (Sao chép y nguyên)")
+    logger.info("Start downloading dataset...")
+    logger.info("Mirror mode")
 
     download_path = f"{VOL_MOUNT_PATH}/raw_mirror"
     os.makedirs(download_path, exist_ok=True)
@@ -43,12 +48,12 @@ def download_dataset_snapshot():
             resume_download=True,        
             max_workers=4                 
         )
-        print(f"TẢI THÀNH CÔNG! Dữ liệu nằm tại: {download_path}")
+        logger.info(f"Download completed! Dataset is stored at: {download_path}")
         volume.commit()
-        print("💾 Volume committed.")
+        logger.info("💾 Volume committed.")
 
     except Exception as e:
-        print(f" Lỗi: {e}")
+        logger.error(f"Error: {e}")
         volume.commit()
 
 

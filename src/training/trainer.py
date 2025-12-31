@@ -1,5 +1,5 @@
 """
-AURORA-XT Training Module
+MOTA Training Module
 ==========================
 Core training logic - shared by training.py và training_modal.py
 Uses absolute imports for Modal compatibility
@@ -14,13 +14,14 @@ from tqdm import tqdm
 import logging
 
 # Absolute imports - works both local and Modal
-from data.tokenizer_old import VietnameseCharTokenizer
-from data.dataset_old import create_dataloaders
-from src.models.aurora_xt import create_model
+from src.data.tokenizers.whisper import WhisperTokenizer
+from src.data.loader import build_dataloader
+from src.models.mota import create_model
 from src.training.losses import create_loss
-from src.evaluation.evaluator import Evaluator
+from src.evaluation import Evaluator
+from src.utils.logging_utils import setup_logger
 
-logger = logging.getLogger(__name__)
+logger = setup_logger(__name__)
 
 
 class Trainer:
@@ -41,16 +42,16 @@ class Trainer:
             torch.cuda.manual_seed_all(seed)
         
         # Initialize tokenizer
-        print("📝 Initializing tokenizer...")
-        self.tokenizer = VietnameseCharTokenizer()
+        logger.info("Initializing tokenizer...")
+        self.tokenizer = WhisperTokenizer()
         self.config['model']['vocab_size'] = self.tokenizer.vocab_size
         
         # Create model
-        print("🏗️ Creating model...")
+        logger.info("Creating model...")
         self.model = create_model(self.config['model']).to(self.device)
         
         total_params = sum(p.numel() for p in self.model.parameters())
-        print(f"   Total params: {total_params:,} (~{total_params*4/1024**2:.1f}MB)")
+        logger.info(f"Total params: {total_params:,} (~{total_params*4/1024**2:.1f}MB)")
         
         # Create loss
         self.criterion = create_loss(self.config)
@@ -74,19 +75,14 @@ class Trainer:
         self.scaler = GradScaler() if self.use_amp else None
         
         # Create dataloaders
-        print("📊 Loading data...")
-        self.dataloaders = create_dataloaders(
-            train_manifest=self.config['data']['train_manifest'],
-            val_manifest=self.config['data']['val_manifest'],
-            batch_size=self.config['data']['batch_size'],
-            num_workers=self.config['data']['num_workers'],
-            data_root=self.config['data']['data_root'],
-            max_train_samples=self.config['data'].get('max_train_samples'),
-            max_val_samples=self.config['data'].get('max_val_samples')
-        )
+        logger.info("Loading data...")
+        self.dataloaders = {
+            'train': build_dataloader(self.config['data'], self.tokenizer, mode='train'),
+            'val': build_dataloader(self.config['data'], self.tokenizer, mode='val')
+        }
         
-        print(f"   Train batches: {len(self.dataloaders['train'])}")
-        print(f"   Val batches: {len(self.dataloaders['val'])}")
+        logger.info(f"Train batches: {len(self.dataloaders['train'])}")
+        logger.info(f"Val batches: {len(self.dataloaders['val'])}")
         
         # Create evaluator
         self.evaluator = Evaluator(self.tokenizer)
@@ -100,7 +96,7 @@ class Trainer:
         self.checkpoint_dir = Path(self.config.get('checkpoint_dir', './checkpoints'))
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
-        print("✅ Trainer initialized")
+        logger.info("Trainer initialized")
     
     def train_epoch(self):
         """Train one epoch"""
@@ -197,15 +193,15 @@ class Trainer:
             max_batches=self.config.get('max_eval_batches', 20)
         )
         
-        print(f"\n📊 Validation:")
-        print(f"   WER: {results['wer']:.2f}%")
-        print(f"   CER: {results['cer']:.2f}%")
+        logger.info("Validation Results:")
+        logger.info(f"   WER: {results['wer']:.2f}%")
+        logger.info(f"   CER: {results['cer']:.2f}%")
         
         if results.get('samples'):
-            print(f"\n📝 Samples:")
+            logger.info("Samples:")
             for i, (pred, ref) in enumerate(results['samples'][:2]):
-                print(f"   [{i}] Pred: {pred}")
-                print(f"       Ref:  {ref}")
+                logger.info(f"   [{i}] Pred: {pred}")
+                logger.info(f"       Ref:  {ref}")
         
         return results
     
@@ -223,13 +219,13 @@ class Trainer:
             'config': self.config
         }, checkpoint_path)
         
-        print(f"💾 Saved: {checkpoint_path}")
+        logger.info(f"Saved checkpoint: {checkpoint_path}")
     
     def train(self):
         """Main training loop"""
-        print("\n" + "="*70)
-        print("🚀 Starting Training")
-        print("="*70)
+        logger.info("="*70)
+        logger.info("Starting Training")
+        logger.info("="*70)
         
         for epoch in range(self.config['training']['num_epochs']):
             self.epoch = epoch
@@ -237,10 +233,10 @@ class Trainer:
             # Train epoch
             train_metrics = self.train_epoch()
             
-            print(f"\n📊 Epoch {epoch+1}:")
-            print(f"   Loss: {train_metrics['loss']:.4f}")
-            print(f"   CTC: {train_metrics['ctc_loss']:.4f}")
-            print(f"   CE: {train_metrics['ce_loss']:.4f}")
+            logger.info(f"Epoch {epoch+1} Completed:")
+            logger.info(f"   Loss: {train_metrics['loss']:.4f}")
+            logger.info(f"   CTC: {train_metrics['ctc_loss']:.4f}")
+            logger.info(f"   CE: {train_metrics['ce_loss']:.4f}")
             
             # Validate
             val_metrics = self.validate()
@@ -249,7 +245,7 @@ class Trainer:
             if val_metrics['wer'] < self.best_wer:
                 self.best_wer = val_metrics['wer']
                 self.save_checkpoint('best_model.pt')
-                print(f"   ✅ New best WER: {self.best_wer:.2f}%")
+                logger.info(f"   New best WER: {self.best_wer:.2f}%")
             
             # Periodic save
             if (epoch + 1) % 5 == 0:
@@ -258,9 +254,8 @@ class Trainer:
         # Final save
         self.save_checkpoint('final_model.pt')
         
-        print("\n" + "="*70)
-        print(f"🎉 Training Complete!")
-        print(f"   Best WER: {self.best_wer:.2f}%")
-        print("="*70)
+        logger.info("="*70)
+        logger.info(f"Training Complete! Best WER: {self.best_wer:.2f}%")
+        logger.info("="*70)
         
         return {'best_wer': self.best_wer, 'steps': self.step}

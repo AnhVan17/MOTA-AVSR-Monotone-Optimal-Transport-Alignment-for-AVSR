@@ -1,0 +1,63 @@
+# AURORA-XT Phase 2 Configuration
+# Hybrid: QualityGate + MQOT (Multi-modal Quality-aware Optimal Transport)
+# Goal: Fine-grained alignment and refinement
+
+# Inherit base settings from Phase 1 where applicable (manually copied for now for self-containment)
+
+model:
+  audio_dim: 768
+  visual_dim: 512
+  d_model: 256
+  num_encoder_layers: 4
+  num_decoder_layers: 2
+  num_heads: 4
+  vocab_size: 51866
+  dropout: 0.1
+  
+  # === Phase 2 Switch ===
+  use_mqot: true            # Enable MQOT + Visual Adapter
+
+mqot:
+  lambda_time: 0.5          # Temporal smoothness weight
+  lambda_qual: 5.0          # Quality penalty weight
+  epsilon: 0.15             # Sinkhorn epsilon
+  n_iters: 20               # Sinkhorn iterations
+
+loss:
+  ctc_weight: 0.3
+  ce_weight: 0.7
+  # Potential auxiliary losses for Phase 2 can be added here
+  # ot_loss_weight: 0.1 
+
+data:
+  train_manifest: "/mnt/manifests/grid_manifest.jsonl"
+  val_manifest: "/mnt/manifests/grid_manifest.jsonl"
+  data_root: "/mnt/processed_features/grid" # Still using features? Or raw video?
+  # For true E2E MQOT, ideally raw video. But for feature-level MQOT (current design), features are fine.
+  batch_size: 24            # Reduced batch size due to OT computation
+  num_workers: 2
+  use_precomputed_features: true
+  max_samples: null
+
+training:
+  num_epochs: 20
+  learning_rate: 5e-5       # Lower LR for fine-tuning
+  min_lr: 1e-6
+  weight_decay: 0.01
+  gradient_clip: 5.0
+  use_amp: true
+
+augmentation:
+  # Same as Phase 1
+  time_mask_param: 10
+  freq_mask_param: 64
+  noise_std: 0.01
+  prob: 0.5
+  dropout_prob: 0.1
+  frame_mask_param: 5
+  visual_prob: 0.3
+
+logging:
+  use_wandb: false
+  checkpoint_dir: "/mnt/checkpoints/phase2"
+  pretrained_path: "/mnt/checkpoints/phase1/best_model.pt" # Resume from Phase 1

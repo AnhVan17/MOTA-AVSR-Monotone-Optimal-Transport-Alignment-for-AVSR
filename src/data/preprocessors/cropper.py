@@ -1,12 +1,15 @@
 import cv2
 import numpy as np
 import mediapipe as mp
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger(__name__)
 
 # Standalone configuration for cropping to avoid circular imports or heavy dependencies
 class CropperConfig:
-    IMAGE_SIZE = 96
-    RESNET_INPUT_SIZE = 224
-    FRAME_RATE = 25 # GRID dataset is 25fps
+    IMAGE_SIZE = 88          # Mouth crop size (SOTA)
+    RESNET_INPUT_SIZE = 88   # Changed from 224 to 88 (SOTA standard)
+    FRAME_RATE = 25          # GRID dataset is 25fps
 
 class MouthCropper:
     """
@@ -28,7 +31,7 @@ class MouthCropper:
         """
         cap = cv2.VideoCapture(input_path)
         if not cap.isOpened():
-            print(f"Could not open {input_path}")
+            logger.error(f"Could not open {input_path}")
             return False
 
         # Get video properties

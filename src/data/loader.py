@@ -5,6 +5,9 @@ from typing import Dict
 # Import your dataset and collate function
 from .datasets.grid import GridDataset
 from .collate import collate_fn
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger(__name__)
 
 def build_dataloader(
     config: Dict,
@@ -45,10 +48,10 @@ def build_dataloader(
     else: 
         raise ValueError(f"Invalid mode: {mode}. Expected 'train', 'val', or 'test'.")
 
-    print(f" Building DataLoader [{mode}]")
-    print(f"   - Manifest: {manifest_path}")
-    print(f"   - Input Type: {'Precomputed Features (.npy)' if use_features else 'Raw Video (.mpg)'}")
-    print(f"   - Batch Size: {config['batch_size']}")
+    logger.info(f"Building DataLoader [{mode}]")
+    logger.debug(f"   - Manifest: {manifest_path}")
+    logger.debug(f"   - Input Type: {'Precomputed Features (.npy)' if use_features else 'Raw Video (.mpg)'}")
+    logger.debug(f"   - Batch Size: {config['batch_size']}")
 
     # 2. Initialize Dataset
     dataset = GridDataset(
@@ -56,7 +59,9 @@ def build_dataloader(
         tokenizer=tokenizer,
         data_root=config['data_root'],
         use_precomputed_features=use_features,
-        max_samples=config.get('max_samples', None) # Useful for debugging (quick run)
+        max_samples=config.get('max_samples', None), # Useful for debugging (quick run)
+        augment=(mode == "train"),
+        aug_cfg=config.get('augmentation', None)
     )
 
     # 3. Initialize DataLoader

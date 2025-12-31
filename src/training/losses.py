@@ -8,6 +8,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class HybridLoss(nn.Module):
@@ -121,7 +124,7 @@ class HybridLoss(nn.Module):
                         target_lengths
                     )
                 except RuntimeError as e:
-                    print(f"⚠️ CTC loss failed: {e}")
+                    logger.error(f"CTC loss failed: {e}")
                     ctc_loss_val = torch.tensor(0.0, device=device)
         
         # ============================

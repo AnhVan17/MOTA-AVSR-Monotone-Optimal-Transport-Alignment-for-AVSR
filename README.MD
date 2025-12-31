@@ -1,381 +1,386 @@
-# AURORA-XT: Vietnamese Audio-Visual Speech Recognition
+# MOTA: Multi-modal Optimal Transport Alignment for AVSR
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![PyTorch 2.1+](https://img.shields.io/badge/pytorch-2.1+-ee4c2c.svg)](https://pytorch.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-**AURORA-XT** (Audio-Visual Recognition OptimizeR with Adaptive eXtension Transformer) là mô hình nhận dạng giọng nói tiếng Việt kết hợp cả âm thanh và hình ảnh môi (lip-reading).
-
-## 📋 Mục Lục
-
-- [Kiến Trúc Hệ Thống](#kiến-trúc-hệ-thống)
-- [Pipeline Chi Tiết](#pipeline-chi-tiết)
-- [Cài Đặt](#cài-đặt)
-- [Sử Dụng](#sử-dụng)
-- [Cấu Trúc Thư Mục](#cấu-trúc-thư-mục)
-- [Kết Quả](#kết-quả)
+An Audio-Visual Speech Recognition system with two-phase training:
+- **Phase 1**: QualityGate for coarse fusion
+- **Phase 2**: MQOT for fine-grained alignment
 
 ---
 
-## 🏗️ Kiến Trúc Hệ Thống
+## Table of Contents
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           AURORA-XT ARCHITECTURE                            │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   ┌─────────────┐     ┌─────────────┐                                       │
-│   │   VIDEO     │     │   AUDIO     │                                       │
-│   │  (MP4/AVI)  │     │  (from MP4) │                                       │
-│   └──────┬──────┘     └──────┬──────┘                                       │
-│          │                   │                                              │
-│          ▼                   ▼                                              │
-│   ┌─────────────┐     ┌─────────────┐                                       │
-│   │  MediaPipe  │     │   PyAV/     │                                       │
-│   │  Face Mesh  │     │   FFmpeg    │                                       │
-│   │  (Mouth ROI)│     │  (16kHz)    │                                       │
-│   └──────┬──────┘     └──────┬──────┘                                       │
-│          │                   │                                              │
-│          ▼                   ▼                                              │
-│   ┌─────────────┐     ┌─────────────┐                                       │
-│   │  ResNet-18  │     │   Whisper   │                                       │
-│   │  (Pretrain) │     │   Encoder   │                                       │
-│   │  [T, 512]   │     │  [T, 768]   │                                       │
-│   └──────┬──────┘     └──────┬──────┘                                       │
-│          │                   │                                              │
-│          └─────────┬─────────┘                                              │
-│                    │                                                        │
-│                    ▼                                                        │
-│          ┌─────────────────┐                                                │
-│          │  Quality Gate   │  ← Adaptive audio/visual weighting             │
-│          │  (Learned)      │                                                │
-│          └────────┬────────┘                                                │
-│                   │                                                         │
-│                   ▼                                                         │
-│          ┌─────────────────┐                                                │
-│          │   Conformer     │  ← 6 layers, Conv + Attention                  │
-│          │    Encoder      │                                                │
-│          └────────┬────────┘                                                │
-│                   │                                                         │
-│          ┌───────┴────────┐                                                 │
-│          ▼                ▼                                                 │
-│   ┌─────────────┐  ┌─────────────┐                                          │
-│   │  CTC Head   │  │  AR Decoder │  ← Hybrid decoding                       │
-│   │  (Align)    │  │  (Context)  │                                          │
-│   └──────┬──────┘  └──────┬──────┘                                          │
-│          │                │                                                 │
-│          └───────┬────────┘                                                 │
-│                  ▼                                                          │
-│          ┌─────────────────┐                                                │
-│          │   Vietnamese    │                                                │
-│          │     Text        │                                                │
-│          └─────────────────┘                                                │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+1.  [Architecture](#1-architecture)
+2.  [Feature Extractors](#2-feature-extractors)
+3.  [Preprocessing](#3-preprocessing)
+4.  [Training](#4-training)
+5.  [Fusion](#5-fusion)
+6.  [Formulas](#6-formulas)
+7.  [Project Structure](#7-project-structure)
+8.  [Usage](#8-usage)
 
 ---
 
-## 🔄 Pipeline Chi Tiết
+## 1. Architecture
 
-### 1️⃣ Preprocessing Pipeline
+### 1.1 System Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         PREPROCESSING PIPELINE                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   RAW DATA (ViCocktail TAR files)                                           │
-│   ├── video.mp4                                                             │
-│   └── transcript.txt                                                        │
-│                                                                             │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                      VIDEO PROCESSING                               │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │  1. Load video với Decord                                           │   │
-│   │  2. Sample frames: 25 FPS → MAX 375 frames (15s)                    │   │
-│   │  3. MediaPipe Face Mesh: Extract mouth ROI (96x96)                  │   │
-│   │  4. Normalize: ImageNet mean/std                                    │   │
-│   │  5. Loop padding nếu < 375 frames                                   │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                       AUDIO PROCESSING                              │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │  1. Extract audio: PyAV/FFmpeg                                      │   │
-│   │  2. Resample: → 16kHz mono                                          │   │
-│   │  3. RMS normalize: 0.1 target                                       │   │
-│   │  4. Length: 240,000 samples (15s)                                   │   │
-│   │  5. Loop padding nếu audio ngắn hơn                                 │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                     FEATURE EXTRACTION                              │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │                                                                     │   │
-│   │  VISUAL:                        AUDIO:                              │   │
-│   │  ┌──────────────────┐          ┌──────────────────┐                 │   │
-│   │  │   ResNet-18      │          │  Whisper-Small   │                 │   │
-│   │  │   (Pretrained)   │          │   (Encoder)      │                 │   │
-│   │  │                  │          │                  │                 │   │
-│   │  │  Input:          │          │  Input:          │                 │   │
-│   │  │  [3, 375, 96, 96]│          │  [1, 240000]     │                 │   │
-│   │  │                  │          │                  │                 │   │
-│   │  │  Output:         │          │  Output:         │                 │   │
-│   │  │  [375, 512]      │          │  [~450, 768]     │                 │   │
-│   │  └──────────────────┘          └──────────────────┘                 │   │
-│   │                                                                     │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                       TEXT TOKENIZATION                             │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │  Vietnamese Character Tokenizer (121 tokens)                        │   │
-│   │  - Special: <PAD>, <BOS>, <EOS>, <UNK>, <BLANK>                     │   │
-│   │  - Vietnamese vowels với dấu (á, à, ả, ã, ạ, ...)                   │   │
-│   │  - Basic Latin + Numbers + Punctuation                              │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   OUTPUT: .pt files                                                         │
-│   {                                                                         │
-│       'audio': [T_a, 768],   # Whisper features                             │
-│       'visual': [T_v, 512],  # ResNet features                              │
-│       'text': [L],           # Token IDs                                    │
-│       'text_raw': "..."      # Original text                                │
-│   }                                                                         │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+%%{init: {'theme': 'default', 'themeVariables': { 'fontSize': '14px'}, 'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart TB
+    V["&emsp;&emsp;Video Input&emsp;&emsp;"] --> CROP["&emsp;&emsp;Mouth Crop&emsp;&emsp;"]
+    V --> AUDIO["&emsp;&emsp;Audio Extract&emsp;&emsp;"]
+    CROP --> RES["&emsp;&emsp;ResNet18&emsp;&emsp;"]
+    AUDIO --> WHIS["&emsp;&emsp;Whisper Encoder&emsp;&emsp;"]
+    RES --> PT["&emsp;&emsp;.pt Feature File&emsp;&emsp;"]
+    WHIS --> PT
+    PT --> QG["&emsp;&emsp;QualityGate&emsp;&emsp;"]
+    QG --> MQ["&emsp;&emsp;MQOT Layer&emsp;&emsp;"]
+    MQ --> ENC["&emsp;&emsp;Conformer Encoder&emsp;&emsp;"]
+    ENC --> DEC["&emsp;&emsp;Hybrid Decoder&emsp;&emsp;"]
+    DEC --> OUT["&emsp;&emsp;Transcript Output&emsp;&emsp;"]
 ```
 
-### 2️⃣ Training Pipeline
+### 1.2 Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           TRAINING PIPELINE                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   DATALOADER                                                                │
-│   ├── Load .pt files from manifests                                         │
-│   ├── Dynamic padding per batch                                             │
-│   └── Create attention masks                                                │
-│                                                                             │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                        AURORA-XT MODEL                              │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │                                                                     │   │
-│   │  1. PROJECTION LAYERS                                               │   │
-│   │     Audio: [768] → [256]                                            │   │
-│   │     Visual: [512] → [256]                                           │   │
-│   │                                                                     │   │
-│   │  2. QUALITY GATE (Adaptive Fusion)                                  │   │
-│   │     - Learn per-frame quality scores                                │   │
-│   │     - Weighted combination: α*audio + β*visual                      │   │
-│   │     - Temporal alignment via interpolation                          │   │
-│   │                                                                     │   │
-│   │  3. CONFORMER ENCODER (6 layers)                                    │   │
-│   │     - FFN → MHA → Conv → FFN                                        │   │
-│   │     - Captures acoustic + temporal patterns                         │   │
-│   │                                                                     │   │
-│   │  4. HYBRID DECODER                                                  │   │
-│   │     ┌─────────────┐    ┌─────────────┐                              │   │
-│   │     │  CTC Head   │    │  AR Decoder │                              │   │
-│   │     │  (30% loss) │    │  (70% loss) │                              │   │
-│   │     └─────────────┘    └─────────────┘                              │   │
-│   │                                                                     │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                         HYBRID LOSS                                 │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │                                                                     │   │
-│   │  L_total = α * L_CTC + β * L_CE                                     │   │
-│   │                                                                     │   │
-│   │  - CTC Loss: Alignment learning (không cần alignment labels)        │   │
-│   │  - CE Loss: Language modeling (next token prediction)               │   │
-│   │  - Curriculum: Start CTC-heavy → shift to CE                        │   │
-│   │                                                                     │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                    ▼                                                        │
-│   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                        OPTIMIZATION                                 │   │
-│   ├─────────────────────────────────────────────────────────────────────┤   │
-│   │  - Optimizer: AdamW (lr=3e-4, weight_decay=0.01)                    │   │
-│   │  - Scheduler: CosineAnnealing                                       │   │
-│   │  - Mixed Precision: FP16 (AMP)                                      │   │
-│   │  - Gradient Clipping: 5.0                                           │   │
-│   └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 3️⃣ Model Components Summary
-
-| Component | Model | Input | Output | Purpose |
-|-----------|-------|-------|--------|---------|
-| **Audio Encoder** | Whisper-Small | Waveform [240k] | [~450, 768] | Extract acoustic features |
-| **Visual Encoder** | ResNet-18 | Frames [375, 96, 96] | [375, 512] | Extract lip features |
-| **Quality Gate** | Learned MLP | Audio + Visual | Weights [T, 2] | Adaptive modality fusion |
-| **Conformer** | 6-layer | Fused [T, 256] | Encoded [T, 256] | Contextual encoding |
-| **CTC Head** | Linear | Encoded | Logits [T, vocab] | Frame-level alignment |
-| **AR Decoder** | 4-layer Transformer | Encoded + Targets | Logits [L, vocab] | Autoregressive decoding |
+| Stage | Input | Output | Tool |
+|-------|-------|--------|------|
+| Crop | Video | Mouth ROI | MediaPipe |
+| Audio | Video | Waveform | FFmpeg |
+| Audio Feat | Waveform | T x 768 | Whisper |
+| Visual Feat | Frames | T x 512 | ResNet18 |
+| Fusion | A + V | T x 256 | QualityGate |
+| Decode | Features | Logits | Conformer |
 
 ---
 
-## 🚀 Cài Đặt
+## 2. Feature Extractors
 
-### Yêu Cầu
-- Python 3.10+
-- CUDA 11.8+ (for GPU training)
-- 16GB+ RAM
-- GPU: T4 (inference), A100 (training recommended)
+### 2.1 Whisper (Audio)
 
-### Cài Đặt Local
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart LR
+    W1["&emsp;Waveform&emsp;"] --> W2["&emsp;Mel Spectrogram&emsp;"]
+    W2 --> W3["&emsp;Conv1D Layers&emsp;"]
+    W3 --> W4["&emsp;Transformer x12&emsp;"]
+    W4 --> W5["&emsp;Features 1500x768&emsp;"]
+```
 
+**Specs:**
+
+| Item | Value |
+|------|-------|
+| Model | whisper-small |
+| Input | 16kHz, 15s |
+| Mel | 80 x 3000 |
+| Output | 1500 x 768 |
+
+### 2.2 ResNet18 (Visual)
+
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart LR
+    R1["&emsp;Frame 88x88&emsp;"] --> R2["&emsp;Conv 7x7&emsp;"]
+    R2 --> R3["&emsp;MaxPool 3x3&emsp;"]
+    R3 --> R4["&emsp;ResBlocks x4&emsp;"]
+    R4 --> R5["&emsp;GlobalAvgPool&emsp;"]
+    R5 --> R6["&emsp;512-dim Output&emsp;"]
+```
+
+**Specs:**
+
+| Item | Value |
+|------|-------|
+| Model | resnet18 |
+| Input | 88 x 88 RGB |
+| Output | 512-dim |
+
+---
+
+## 3. Preprocessing
+
+### 3.1 Pipeline Stages
+
+**Stage 1: CROP**
+
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart LR
+    A1["&emsp;Read Frames&emsp;"] --> A2["&emsp;Detect Face&emsp;"]
+    A2 --> A3["&emsp;Crop Mouth&emsp;"]
+    A3 --> A4["&emsp;Save Video&emsp;"]
+```
+
+**Stage 2: EXTRACT**
+
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart LR
+    B1["&emsp;Extract Audio&emsp;"] --> B2["&emsp;Whisper Encode&emsp;"]
+    B3["&emsp;Load Frames&emsp;"] --> B4["&emsp;ResNet Encode&emsp;"]
+    B2 --> B5["&emsp;Combine Features&emsp;"]
+    B4 --> B5
+    B5 --> B6["&emsp;Save .pt File&emsp;"]
+```
+
+### 3.2 Mouth Detection
+
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 20, 'rankSpacing': 40}}}%%
+flowchart LR
+    M1["&emsp;BGR Frame&emsp;"] --> M2["&emsp;To RGB&emsp;"]
+    M2 --> M3["&emsp;FaceMesh&emsp;"]
+    M3 --> M4["&emsp;Landmarks&emsp;"]
+    M4 --> M5["&emsp;Calc Center&emsp;"]
+    M5 --> M6["&emsp;Crop ROI&emsp;"]
+    M6 --> M7["&emsp;88x88 Output&emsp;"]
+```
+
+**Landmark IDs:** 13, 14, 61, 291, 78, 308, 324, 17
+
+**Formulas:**
+```
+cx = mean(x_coords)
+cy = mean(y_coords)
+r = max(width, height) * 0.9
+```
+
+**Optimization:** Detect every 5 frames, reuse bbox.
+
+### 3.3 Audio Extraction
+
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart TB
+    V["&emsp;Video File&emsp;"] --> P1["&emsp;PyAV Method&emsp;"]
+    V --> P2["&emsp;FFmpeg Fallback&emsp;"]
+    P1 --> N["&emsp;RMS Normalize&emsp;"]
+    P2 --> N
+    N --> PAD["&emsp;Pad to 15 seconds&emsp;"]
+    PAD --> OUT["&emsp;Waveform Output&emsp;"]
+```
+
+**FFmpeg Command:**
 ```bash
-# Clone repository
-git clone https://github.com/AnhVan17/Audio-Visual-Speech-Recognition.git
-cd Audio-Visual-Speech-Recognition
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# hoặc: venv\Scripts\activate  # Windows
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install package in development mode
-pip install -e .
-```
-
-### Cài Đặt Modal (Cloud)
-
-```bash
-# Install Modal
-pip install modal
-
-# Setup Modal authentication
-modal setup
-
-# Verify
-modal run --help
+ffmpeg -i input -ar 16000 -ac 1 -f wav pipe:1
 ```
 
 ---
 
-## 📖 Sử Dụng
+## 4. Training
 
-### 1. Preprocessing
+### 4.1 Training Flow
 
-```bash
-# Local preprocessing
-python -m src.data.preprocessing \
-    --input_dir ./data/raw_tars \
-    --output_dir ./data/processed_features \
-    --manifest_dir ./data/manifests
-
-# Modal preprocessing (recommended for large datasets)
-modal run scripts/preprocessing_modal.py
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart LR
+    D1["&emsp;Dataset&emsp;"] --> D2["&emsp;Collate&emsp;"]
+    D2 --> D3["&emsp;DataLoader&emsp;"]
+    D3 --> M["&emsp;MOTA Model&emsp;"]
+    M --> L1["&emsp;CE Loss&emsp;"]
+    M --> L2["&emsp;CTC Loss&emsp;"]
+    L1 --> L3["&emsp;Hybrid Loss&emsp;"]
+    L2 --> L3
+    L3 --> G["&emsp;Gradient Clip&emsp;"]
+    G --> O["&emsp;AdamW Optimizer&emsp;"]
 ```
 
-### 2. Training
+### 4.2 Two Phases
 
-```bash
-# Local training
-python scripts/training.py --config configs/model/config.yaml
+**Phase 1: Baseline Training**
 
-# Modal training (A100 GPU)
-modal run scripts/training_modal.py
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart LR
+    P1A["&emsp;QualityGate&emsp;"] --> P1B["&emsp;Conformer Encoder&emsp;"]
+    P1B --> P1C["&emsp;Hybrid Decoder&emsp;"]
 ```
 
-### 3. Evaluation
+**Phase 2: MQOT Refinement**
 
-```python
-from src.evaluation.evaluator import Evaluator
-from src.data.tokenizer import VietnameseCharTokenizer
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart LR
+    P2A["&emsp;Freeze QualityGate&emsp;"] --> P2B["&emsp;Train MQOT Layer&emsp;"]
+    P2B --> P2C["&emsp;Fine-tune All&emsp;"]
+```
 
-tokenizer = VietnameseCharTokenizer()
-evaluator = Evaluator(tokenizer)
+**Phase 1 Config:**
+- use_mqot = false
+- lr = 3e-4
+- batch = 32
 
-# Evaluate on validation set
-results = evaluator.evaluate(model, val_loader, device)
-print(f"WER: {results['wer']:.2f}%")
-print(f"CER: {results['cer']:.2f}%")
+**Phase 2 Config:**
+- use_mqot = true
+- lr = 1e-4
+- batch = 16
+
+---
+
+## 5. Fusion
+
+### 5.1 QualityGate
+
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart LR
+    A["&emsp;Audio Input&emsp;"] --> AP["&emsp;Project to 256&emsp;"]
+    V["&emsp;Visual Input&emsp;"] --> VP["&emsp;Project to 256&emsp;"]
+    AP --> QA["&emsp;Quality Score&emsp;"]
+    VP --> QV["&emsp;Quality Score&emsp;"]
+    QA --> W["&emsp;Weighted Sum&emsp;"]
+    QV --> W
+    AP --> W
+    VP --> W
+    W --> F["&emsp;Fused Output&emsp;"]
+```
+
+**Formula:**
+```
+q_a = sigmoid(MLP(audio))
+q_v = sigmoid(MLP(visual))
+alpha = q_a / (q_a + q_v)
+fused = alpha * audio + (1-alpha) * visual
+```
+
+### 5.2 MQOT Layer
+
+```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
+flowchart TB
+    A["&emsp;Audio Features&emsp;"] --> SIM["&emsp;Compute Similarity&emsp;"]
+    V["&emsp;Visual Features&emsp;"] --> SIM
+    SIM --> C["&emsp;Cost Matrix&emsp;"]
+    T["&emsp;Temporal Penalty&emsp;"] --> C
+    Q["&emsp;Quality Penalty&emsp;"] --> C
+    C --> K["&emsp;Kernel K&emsp;"]
+    K --> SK["&emsp;Sinkhorn Iterations&emsp;"]
+    SK --> P["&emsp;Transport Map&emsp;"]
+```
+
+**Cost Matrix:**
+```
+C = -similarity + λ_time * temporal + λ_quality * quality
+```
+
+**Params:**
+- λ_time = 0.5
+- λ_quality = 5.0
+- epsilon = 0.15
+- iterations = 20
+
+---
+
+## 6. Formulas
+
+### 6.1 Hybrid Loss
+
+```
+L = α * L_CTC + β * L_CE
+```
+
+| Epoch | α | β |
+|-------|---|---|
+| 1-5 | 0.7 | 0.3 |
+| 6-15 | 0.5 | 0.5 |
+| 16+ | 0.3 | 0.7 |
+
+### 6.2 CTC Loss
+
+```
+L_CTC = -log P(Y|X)
+P(Y|X) = sum over alignments
+```
+
+### 6.3 Sinkhorn Algorithm
+
+```
+K = exp(-C / ε)
+
+repeat n times:
+    u = 1 / (K @ v)
+    v = 1 / (K.T @ u)
+
+P = diag(u) @ K @ diag(v)
+```
+
+### 6.4 RMS Normalization
+
+```
+RMS = sqrt(mean(x²))
+x_norm = x * (0.1 / RMS)
 ```
 
 ---
 
-## 📁 Cấu Trúc Thư Mục
+## 7. Project Structure
 
 ```
-ASVR_Viet/
 ├── configs/
-│   └── model/
-│       └── config.yaml          # Training configuration
-├── data/
-│   ├── raw_tars/                # Raw ViCocktail TAR files
-│   ├── processed_features/      # Preprocessed .pt files
-│   └── manifests/               # train/val/test JSONL
-├── scripts/
-│   ├── preprocessing_modal.py   # Modal preprocessing
-│   ├── training.py              # Local training
-│   └── training_modal.py        # Modal training
+│   ├── phase1_base.yaml
+│   └── phase2_mqot.yaml
+├── scripts/modal/
+│   ├── preprocess.py
+│   ├── train_phase1.py
+│   └── train_phase2.py
 ├── src/
 │   ├── data/
-│   │   ├── dataset.py           # PyTorch Dataset & DataLoader
-│   │   ├── preprocessing.py     # Feature extraction pipeline
-│   │   └── tokenizer.py         # Vietnamese tokenizer
+│   │   ├── preprocessors/
+│   │   ├── datasets/
+│   │   ├── loader.py
+│   │   └── collate.py
 │   ├── models/
-│   │   ├── aurora_xt.py         # Main model (re-export)
-│   │   └── fusion/
-│   │       └── simple.py        # AURORA-XT implementation
+│   │   ├── layers/
+│   │   ├── fusion/
+│   │   └── mota.py
 │   ├── training/
-│   │   ├── trainer.py           # Training loop
-│   │   └── losses.py            # Hybrid CTC + CE loss
+│   │   ├── trainer.py
+│   │   └── losses.py
 │   └── evaluation/
-│       ├── evaluator.py         # WER/CER computation
-│       └── metrics.py           # Evaluation metrics
-├── checkpoints/                 # Saved models
-├── requirements.txt
-├── setup.py
-└── README.MD
+└── guides/
+    └── ADDING_NEW_DATASET.md
 ```
 
 ---
 
-## 📊 Kết Quả
+## 8. Usage
 
-### Performance (ViCocktail Dataset)
+### 8.1 Install
 
-| Epoch | WER (%) | CER (%) | Notes |
-|-------|---------|---------|-------|
-| 5 | ~37% | ~25% |  |
-| 10 | ~32.45% | ~14.60% | |
-| 20 | ~29.49% | ~13.54% | |
+```bash
+pip install torch transformers timm jiwer mediapipe
+pip install modal && modal token new
+```
 
-### Training Tips
+### 8.2 Preprocess
 
-1. **Batch Size**: 32 for A100, 16 for smaller GPUs
-2. **Learning Rate**: 3e-4 with CosineAnnealing
-3. **Gradient Clipping**: 5.0 (important for CTC stability)
-4. **Mixed Precision**: Always enable for speed
+```bash
+# Crop mouth regions
+modal run scripts/modal/preprocess.py --stage crop --dataset grid
+
+# Extract features
+modal run scripts/modal/preprocess.py --stage extract --dataset grid
+```
+
+### 8.3 Train
+
+```bash
+# Phase 1: Baseline
+modal run scripts/modal/train_phase1.py
+
+# Phase 2: MQOT
+modal run scripts/modal/train_phase2.py
+```
+
+### 8.4 Config
+
+| Param | P1 | P2 |
+|-------|----|----| 
+| use_mqot | false | true |
+| batch | 32 | 16 |
+| lr | 3e-4 | 1e-4 |
 
 ---
 
-## 📚 Resources
+## References
 
-- **Project Wiki**: [Google Docs](https://docs.google.com/document/d/1THTPq162FbKcZJhWwS3jl_neUeOkKTPHO_uduup8pwc/edit)
-- **Research Notes**: [Google Docs](https://docs.google.com/document/d/1B20ZbUj4u9k7BDbxh7bLlJPX6pzc6TnnRxBtMxdU1Kg/edit)
-- **GitHub Issues**: [Bug Reports](https://github.com/AnhVan17/Audio-Visual-Speech-Recognition/issues)
-
----
-
-## 📄 License
-
-MIT License - See [LICENSE](LICENSE) for details.
-
-## 🤝 Contributors
-- **Nguyễn Phạm Anh Văn** - [@AnhVan17](https://github.com/AnhVan17)
-- **Võ Minh Thịnh** - [@finalFlash159](https://github.com/finalFlash159)
+- [Adding New Dataset](guides/ADDING_NEW_DATASET.md)
