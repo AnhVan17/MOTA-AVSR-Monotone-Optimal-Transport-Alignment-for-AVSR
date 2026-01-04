@@ -1,6 +1,9 @@
 from transformers import WhisperTokenizer as HfWhisperTokenizer
 import torch
 from typing import List
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger(__name__)
 
 class WhisperTokenizer:
     def __init__(
@@ -27,10 +30,10 @@ class WhisperTokenizer:
         self.sot_token_id = self.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
         self.eot_token_id = self.tokenizer.convert_tokens_to_ids("<|endoftranscript|>")
 
-        print(f"WhisperTokenizer initialized")
-        print(f"   Vocab size: {self.vocab_size}")
-        print(f"   Language: {language}")
-        print(f"   Model: {model}")
+        logger.debug(f"WhisperTokenizer initialized")
+        logger.debug(f"   Vocab size: {self.vocab_size}")
+        logger.debug(f"   Language: {language}")
+        logger.debug(f"   Model: {model}")
 
     @property
     def vocab_size(self):
@@ -46,6 +49,16 @@ class WhisperTokenizer:
             text,
             add_special_tokens=add_special_tokens
         )
+
+    def decode(
+        self,
+        ids,
+        skip_special_tokens: bool = True
+    ) -> str:
+        """Decode single sequence of token IDs to text"""
+        if isinstance(ids, torch.Tensor):
+            ids = ids.tolist()
+        return self.tokenizer.decode(ids, skip_special_tokens=skip_special_tokens)
 
     def batch_decode(
         self,

@@ -2,9 +2,14 @@ import torch
 from torch.utils.data import DataLoader
 from typing import Dict
 
-# Import your dataset and collate function
+# Import datasets
 from .datasets.grid import GridDataset
-from .collate import collate_fn
+from .datasets.vicocktail import VicocktailDataset
+# Import new unified collate function
+from .collate import avsr_collate_fn
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger(__name__)
 
 def build_dataloader(
     config: Dict,
@@ -13,60 +18,76 @@ def build_dataloader(
 ) -> DataLoader:
     """
     Factory function to build PyTorch DataLoaders for AVSR.
+    Compatible with both Grid and ViCocktail datasets.
     
     Args:
-        config (Dict): Configuration dictionary containing paths and hyperparameters.
-                       Required keys: 'data_root', 'batch_size', 'num_workers'.
-                       Conditional keys: 'train_manifest', 'val_manifest', 'test_manifest'.
-        tokenizer: Instance of WhisperTokenizer.
-        mode (str): 'train', 'val', or 'test'. Controls shuffling and data sources.
+        config (Dict): Configuration dictionary. 
+                       Must include 'dataset_name' ('grid' or 'vicocktail').
+        tokenizer: Tokenizer instance.
+        mode (str): 'train' | 'val' | 'test'.
         
     Returns:
-        DataLoader: A configured PyTorch DataLoader.
+        DataLoader: PyTorch DataLoader instance.
     """
     
-    # 1. Configure Loader Parameters based on Mode
+    # 1. Select Dataset Class
+    # Default to Vicocktail if not specified to maintain backward compatibility
+    dataset_name = config.get('dataset_name', 'vicocktail').lower()
+    
+    if dataset_name == 'grid':
+        DatasetClass = GridDataset
+    elif dataset_name == 'vicocktail':
+        DatasetClass = VicocktailDataset
+    else:
+        raise ValueError(f"Unknown dataset_name: {dataset_name}. Supported: 'grid', 'vicocktail'")
+
+    # 2. Configure Loader Parameters based on Mode
     if mode == "train":
         manifest_path = config['train_manifest']
         shuffle = True
-        drop_last = True   # Good for BatchNorm stability during training
-        # Check if we should use precomputed .npy features (Phase 1) or raw video (Phase 2)
-        # Default to False (Raw Video) if not specified
-        use_features = config.get('use_precomputed_features', False)
+        drop_last = True
+        augment = True
+        max_s = config.get('max_train_samples')
         
     elif mode in ["val", "test"]:
         manifest_path = config['val_manifest'] if mode == "val" else config.get('test_manifest')
-        shuffle = False    # Never shuffle validation/test data (for consistent metrics)
-        drop_last = False  # Keep all samples for evaluation
-        # Validation usually runs on raw video to ensure end-to-end correctness,
-        # unless you specifically want to validate on features.
-        use_features = config.get('use_precomputed_features', False)
+        shuffle = False
+        drop_last = False
+        augment = False
+        max_s = config.get('max_val_samples')
         
     else: 
         raise ValueError(f"Invalid mode: {mode}. Expected 'train', 'val', or 'test'.")
 
-    print(f" Building DataLoader [{mode}]")
-    print(f"   - Manifest: {manifest_path}")
-    print(f"   - Input Type: {'Precomputed Features (.npy)' if use_features else 'Raw Video (.mpg)'}")
-    print(f"   - Batch Size: {config['batch_size']}")
+    use_features = config.get('use_precomputed_features', True)
 
-    # 2. Initialize Dataset
-    dataset = GridDataset(
-        manifest_path=manifest_path,
-        tokenizer=tokenizer,
-        data_root=config['data_root'],
-        use_precomputed_features=use_features,
-        max_samples=config.get('max_samples', None) # Useful for debugging (quick run)
-    )
+    logger.info(f"Building DataLoader [{mode}] for {dataset_name.upper()}")
+    # logger.debug(f"   - Manifest: {manifest_path}")
+    # logger.debug(f"   - Augment: {augment}")
+    
+    # 3. Initialize Dataset
+    try:
+        dataset = DatasetClass(
+            manifest_path=manifest_path,
+            tokenizer=tokenizer,
+            data_root=config['data_root'],
+            use_precomputed_features=use_features,
+            max_samples=max_s,
+            augment=augment,
+            aug_cfg=config.get('aug_cfg', None) # Pass augmentation config if present
+        )
+    except Exception as e:
+        logger.error(f"Failed to initialize dataset: {e}")
+        raise e
 
-    # 3. Initialize DataLoader
+    # 4. Initialize DataLoader with Unified Collate
     loader = DataLoader(
         dataset,
         batch_size=config['batch_size'],
         shuffle=shuffle,
-        num_workers=config['num_workers'],
-        collate_fn=collate_fn,  # Custom batch processing logic
-        pin_memory=True,        # Faster data transfer to CUDA (GPU)
+        num_workers=config.get('num_workers', 4),
+        collate_fn=avsr_collate_fn,  # Using the robust collate function
+        pin_memory=True,
         drop_last=drop_last
     )
     

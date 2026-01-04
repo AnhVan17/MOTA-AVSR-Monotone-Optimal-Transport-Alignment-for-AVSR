@@ -12,7 +12,7 @@ class Evaluator:
     def ctc_greedy_decode(
         self,
         logits: torch.Tensor,
-        blank_id: int = 4
+        blank_id: int = 0  # Standard CTC blank ID
     ) -> List[List[int]]:
 
         pred_ids = logits.argmax(dim=-1)       
@@ -41,8 +41,8 @@ class Evaluator:
         Returns:
             List of decoded strings
         """
-        # CTC decode
-        pred_ids = self.ctc_greedy_decode(logits, blank_id=4)
+        # CTC decode - use blank_id=0 (standard CTC convention)
+        pred_ids = self.ctc_greedy_decode(logits, blank_id=0)
         
         # Convert to text
         texts = []

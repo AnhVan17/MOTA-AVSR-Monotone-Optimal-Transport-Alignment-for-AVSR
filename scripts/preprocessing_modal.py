@@ -1,324 +1,334 @@
-"""
-ViCocktail AVSR Preprocessing - Modal Pipeline
-===============================================
-Modal wrapper - uses shared PreprocessingPipeline
-"""
-
 import modal
-import json
-import random
-import logging
+import os
 import sys
-from pathlib import Path
-from typing import Dict, List
+import glob
+from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
+import threading
 
-APP_NAME = "vicocktail-preprocessing-v11"
-VOLUME_NAME = "avsr-dataset-volume"
-VOL_MOUNT_PATH = "/data"
+# --- Config ---
+APP_NAME = "avsr-preprocess-unified"
+VOLUME_NAME = "avsr-volume"
 
-# Paths
-INPUT_DIR = f"{VOL_MOUNT_PATH}/raw_mirror"
-OUTPUT_DIR = f"{VOL_MOUNT_PATH}/processed_features"
-MANIFEST_DIR = f"{VOL_MOUNT_PATH}/manifests"
+# --- Image Definitions ---
+# 1. Base Image Helper
+def get_base_image():
+    return (
+        modal.Image.debian_slim(python_version="3.10")
+        .apt_install(
+            "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "libsndfile1", "git",
+            "libegl1-mesa", "libgles2-mesa"
+        )
+        .pip_install(
+            "numpy<2",
+            "tqdm"
+        )
+    )
 
-# Processing limits
-MAX_TRAIN_TARS = 15
-MAX_TEST_TARS = 3
-SAMPLES_PER_TAR = None
+# 2. CPU Image (For Cropping - Lightweight)
+crop_image = (
+    get_base_image()
+    .pip_install(
+        "opencv-python-headless",
+        "mediapipe==0.10.9" # Optimized for CPU
+    )
+    .add_local_dir("src", remote_path="/root/src")
+)
 
-# Config
-VAL_SPLIT_RATIO = 0.1
-RANDOM_SEED = 42 
-CHECKPOINT_EVERY_N = 100
-
-# Model cache
-MODEL_CACHE = modal.Volume.from_name("model-cache-avsr", create_if_missing=True)
-MODEL_CACHE_PATH = "/cache"
-
-# DOCKER IMAGE
-image = (
+# 3. GPU Image (For Extraction) - Using same pattern as modal_train_phase1.py
+extract_image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install(
-        "libgl1-mesa-glx", "libglib2.0-0", "libsm6",
-        "libxext6", "libxrender1", "ffmpeg", "libsndfile1",
-        "build-essential", "pkg-config",
-        "libavcodec-dev", "libavformat-dev", "libavutil-dev",
-        "libswscale-dev", "libavdevice-dev"
+        "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg", "libsndfile1", "git",
+        "libegl1-mesa", "libgles2-mesa"
     )
     .pip_install(
         "torch==2.1.2",
         "torchaudio==2.1.2",
         "torchvision==0.16.2",
-        "numpy<2",
+        "numpy<2",  # Install with torch (same pattern as modal_train_phase1.py)
         index_url="https://download.pytorch.org/whl/cu118"
     )
     .pip_install(
+        "tqdm",
         "transformers==4.36.2",
         "timm==0.9.12",
         "huggingface-hub==0.20.3",
-        "tokenizers==0.15.0",
-        "decord==0.6.0",
-        "opencv-python-headless==4.9.0.80",
-        "mediapipe==0.10.9",
         "soundfile==0.12.1",
-        "webdataset==0.2.86",
-        "av==11.0.0",
-        "Pillow==10.2.0",
-        "tqdm==4.66.1",
-        "numpy<2"  
+        "opencv-python-headless",
+        "mediapipe==0.10.9",
+        "numpy<2",  # Force again to prevent override
+        "av"        # PyAV for robust audio extraction
     )
+    .add_local_dir("src", remote_path="/root/src")
 )
 
 app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
-# Add src directory to image
-image_with_src = image.add_local_dir(
-    local_path=Path(__file__).parent.parent / "src",
-    remote_path="/root/src"
+
+# --- FACTORY: Get Dataset Preprocessor ---
+def get_preprocessor(dataset_name, data_root, use_precropped=False):
+    sys.path.append("/root")
+    dataset_name = dataset_name.lower()
+    
+    if dataset_name == "grid":
+        from src.data.preprocessors.grid import GridPreprocessor
+        return GridPreprocessor(data_root=data_root, use_precropped=use_precropped)
+    
+    elif dataset_name == "vicocktail":
+        from src.data.preprocessors.vicocktail import ViCocktailPreprocessor
+        return ViCocktailPreprocessor(data_root=data_root, use_precropped=use_precropped)
+        
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
+
+
+# --- STAGE 1: CROP (CPU, Parallel) ---
+@app.function(
+    image=crop_image,
+    volumes={"/mnt": volume},
+    gpu="T4",      # Use cheap GPU instance for high RAM/CPU availability
+    cpu=8.0,       # High CPU for 16 threads
+    memory=32768,  # 32GB RAM to prevent OOM
+    timeout=3600*12
 )
+def run_crop_stage(dataset_name: str, input_path: str, output_path: str, batch_size: int = 16):
+    sys.path.append("/root")
+    from src.data.preprocessors.cropper import MouthCropper
+    from src.utils.logging_utils import setup_logger
 
+    logger = setup_logger("Preprocess:Crop")
+    logger.info(f"Starting Stage 1: Mouth Cropping ({dataset_name.upper()})")
+    logger.info(f"   Input: {input_path}")
+    logger.info(f"   Output: {output_path}")
 
-@app.cls(
-    image=image_with_src,
-    volumes={VOL_MOUNT_PATH: volume, MODEL_CACHE_PATH: MODEL_CACHE},
-    gpu="T4",
-    cpu=4.0,
-    memory=16384,
-    timeout=7200,
-    max_containers=40,
-)
-class DataProcessor:
-    """Distributed preprocessing - uses shared PreprocessingPipeline"""
+    # 1. Scan Files
+    logger.info("Scanning input files...")
+    # Supporting recursive search for common video formats
+    extensions = ['*.mpg', '*.mp4', '*.webm']
+    video_files = []
+    for ext in extensions:
+        video_files.extend(glob.glob(os.path.join(input_path, "**", ext), recursive=True))
     
-    @modal.enter()
-    def initialize(self):
-        import warnings
-        import numpy as np
-        
-        warnings.filterwarnings('ignore')
-        logging.getLogger('mediapipe').setLevel(logging.ERROR)
-        
-        if np.__version__.startswith('2.'):
-            raise RuntimeError(f"NumPy 2.x detected! Need 1.x.")
-        
-        # Add src to path
-        sys.path.insert(0, "/root")
-        
-        # Import shared pipeline
-        from data.preprocessing import PreprocessingConfig, PreprocessingPipeline
-        
-        # Config for Modal
-        class ModalConfig(PreprocessingConfig):
-            DEVICE = 'cuda'
-        
-        self.pipeline = PreprocessingPipeline(ModalConfig())
-        
-        print(f"✅ Worker initialized (Vocab: {self.pipeline.tokenizer.vocab_size})")
-    
-    @modal.method()
-    def process_tar_file(self, tar_path: str, is_test: bool) -> Dict:
-        """Process single TAR file"""
-        import torch
-        import webdataset as wds
-        import gc
-        
-        tar_name = Path(tar_path).stem
-        print(f"\n📦 {tar_name}")
-        
-        save_dir = Path(OUTPUT_DIR) / tar_name
-        save_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Skip if already processed
-        existing = list(save_dir.glob("*.pt"))
-        if len(existing) > 10:
-            print(f"  ⏭️  Already processed ({len(existing)} files)")
-            return {
-                "tar_name": tar_name,
-                "is_test": is_test,
-                "samples": [{
-                    "id": f.stem,
-                    "path": str(f.relative_to(Path(OUTPUT_DIR).parent)),
-                    "text": ""
-                } for f in existing]
-            }
-        
-        dataset = wds.WebDataset(f"file://{tar_path}", shardshuffle=False).decode()
-        
-        stats = {"success": 0, "skip": {}}
-        metadata = []
-        
-        for idx, sample in enumerate(dataset):
-            if SAMPLES_PER_TAR and idx >= SAMPLES_PER_TAR:
-                break
-            
-            sample_id = sample.get("__key__", f"{tar_name}_{idx:06d}")
-            
-            # Use shared pipeline
-            result, error = self.pipeline.process_sample(sample, sample_id)
-            
-            if result:
-                # Clone tensors to prevent memory leaks
-                save_data = {
-                    'id': result['id'],
-                    'audio': result['audio'].clone(),
-                    'visual': result['visual'].clone(),
-                    'text': result['text'].clone() if isinstance(result['text'], torch.Tensor) else result['text'],
-                    'text_raw': result['text_raw']
-                }
-                
-                out_file = save_dir / f"{sample_id}.pt"
-                torch.save(save_data, out_file)
-                
-                metadata.append({
-                    "id": sample_id,
-                    "path": str(out_file.relative_to(Path(OUTPUT_DIR).parent)),
-                    "text": result['text_raw']
-                })
-                stats["success"] += 1
-            else:
-                stats["skip"][error] = stats["skip"].get(error, 0) + 1
-            
-            if idx % 50 == 0:
-                torch.cuda.empty_cache()
-                gc.collect()
-            
-            if idx % CHECKPOINT_EVERY_N == 0 and idx > 0:
-                volume.commit()
-        
-        volume.commit()
-        print(f"  ✅ {stats['success']} processed, {sum(stats['skip'].values())} skipped")
-        
-        return {"tar_name": tar_name, "is_test": is_test, "samples": metadata}
+    logger.info(f"   Found {len(video_files)} video files.")
 
+    # 2. Setup Tasks
+    os.makedirs(output_path, exist_ok=True)
+    tasks = []
+    for src_path in video_files:
+        rel_path = os.path.relpath(src_path, input_path)
+        dest_path = os.path.join(output_path, rel_path)
+        # Always save as .mp4 (Compressed, Standard)
+        dest_path = os.path.splitext(dest_path)[0] + ".mp4"
+        
+        if not os.path.exists(dest_path):
+            tasks.append((src_path, dest_path))
+            
+    logger.info(f"   Tasks to process: {len(tasks)} (Skipped {len(video_files) - len(tasks)} already done)")
+    
+    if not tasks:
+        logger.info("All files already cropped!")
+        return
 
-@app.function(image=image, volumes={VOL_MOUNT_PATH: volume})
-def create_manifests(results: List[Dict]):
-    """Generate train/val/test manifests"""
+    # 3. Thread Local Optimization
+    thread_data = threading.local()
+
+    def get_cropper():
+        if not hasattr(thread_data, "cropper"):
+            # Init ONCE per thread
+            thread_data.cropper = MouthCropper()
+        return thread_data.cropper
     
-    test_samples = []
-    train_val_samples = []
-    
-    for result in results:
-        for sample in result['samples']:
-            if result['is_test']:
-                test_samples.append(sample)
-            else:
-                train_val_samples.append(sample)
-    
-    # Split train/val
-    random.seed(RANDOM_SEED)
-    random.shuffle(train_val_samples)
-    split_idx = int(len(train_val_samples) * (1 - VAL_SPLIT_RATIO))
-    train_samples = train_val_samples[:split_idx]
-    val_samples = train_val_samples[split_idx:]
-    
-    # Save manifests
-    manifest_dir = Path(MANIFEST_DIR)
-    manifest_dir.mkdir(parents=True, exist_ok=True)
-    
-    def save_manifest(samples, filename):
-        with open(manifest_dir / filename, 'w', encoding='utf-8') as f:
-            for item in samples:
-                f.write(json.dumps({
-                    "id": item['id'],
-                    "path": item['path'],
-                    "text": item['text']
-                }, ensure_ascii=False) + '\n')
-        print(f"  ✓ {filename}: {len(samples)}")
-    
-    save_manifest(train_samples, "train.jsonl")
-    save_manifest(val_samples, "val.jsonl")
-    save_manifest(test_samples, "test.jsonl")
+    def process_item(item):
+        src, dst = item
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            cropper = get_cropper()
+            return cropper.process_video(src, dst)
+        except Exception as e:
+            logger.error(f"Error processing {src}: {e}")
+            return False
+
+    # 4. Execute
+    logger.info(f"Starting processing with {batch_size} threads...")
+    with ThreadPoolExecutor(max_workers=batch_size) as executor:
+         list(tqdm(
+            executor.map(process_item, tasks),
+            total=len(tasks),
+            unit="vid"
+        ))
     
     volume.commit()
-    
-    print(f"\n Statistics:")
-    print(f"  Train: {len(train_samples)}")
-    print(f"  Val:   {len(val_samples)}")
-    print(f"  Test:  {len(test_samples)}")
+    logger.info("Cropping Complete & Volume Committed")
 
 
-@app.function(image=image, volumes={VOL_MOUNT_PATH: volume})
-def list_tar_files():
-    """List TAR files"""
-    import glob
-    return sorted(glob.glob(f"{INPUT_DIR}/**/*.tar", recursive=True))
+# --- STAGE 2: KEYFRAME (CPU, Parallel) ---
+@app.function(
+    image=crop_image,  # Lightweight image, no GPU needed
+    volumes={"/mnt": volume},
+    cpu=8.0,
+    memory=16384,
+    timeout=3600*6
+)
+def run_keyframe_stage(dataset_name: str, input_path: str, output_path: str, batch_size: int = 16):
+    """Extract key frames from cropped videos and save as JPEG images."""
+    sys.path.append("/root")
+    from src.data.preprocessors.base import KeyFrameExtractor
+    from src.utils.logging_utils import setup_logger
 
+    logger = setup_logger("Preprocess:KeyFrame")
+    logger.info(f"Starting Stage 2: Key Frame Extraction ({dataset_name.upper()})")
+    logger.info(f"   Input (Cropped): {input_path}")
+    logger.info(f"   Output (KeyFrames): {output_path}")
 
-@app.function(image=image, volumes={VOL_MOUNT_PATH: volume, MODEL_CACHE_PATH: MODEL_CACHE})
-def warmup_models():
-    """Pre-download models"""
-    from transformers import WhisperModel
-    import timm
-    
-    print("🔥 Caching models...")
-    WhisperModel.from_pretrained("openai/whisper-small", cache_dir=MODEL_CACHE_PATH)
-    timm.create_model('resnet18', pretrained=True)
-    MODEL_CACHE.commit()
-    print("✓ Done")
-
-
-@app.local_entrypoint()
-def main():
-    """Main pipeline"""
-    import time
-    
-    print(f"\n{'='*70}")
-    print("🚀 ViCocktail Preprocessing (Modal)")
-    print(f"{'='*70}\n")
-    
-    # Warmup
-    print("Step 1: Caching models...")
-    warmup_models.remote()
-    
-    # Scan TAR files
-    print("\nStep 2: Scanning TAR files...")
-    all_tars = list_tar_files.remote()
-    
-    if not all_tars:
-        print(f"No TAR files in {INPUT_DIR}")
+    if not os.path.exists(input_path):
+        logger.error(f"Input path {input_path} not found. Run 'crop' stage first.")
         return
+
+    # Scan cropped videos
+    video_files = glob.glob(os.path.join(input_path, "**", "*.mp4"), recursive=True)
+    logger.info(f"   Found {len(video_files)} cropped videos.")
+
+    os.makedirs(output_path, exist_ok=True)
     
-    train_tars = [f for f in all_tars if "train" in Path(f).name.lower()]
-    test_tars = [f for f in all_tars if "test" in Path(f).name.lower()]
+    # Setup tasks - each video becomes a folder of images
+    tasks = []
+    for src_path in video_files:
+        rel_path = os.path.relpath(src_path, input_path)
+        # Create folder for each video's frames
+        video_name = os.path.splitext(rel_path)[0]
+        dest_folder = os.path.join(output_path, video_name)
+        
+        # Skip if folder exists and has images
+        if os.path.exists(dest_folder) and len(glob.glob(os.path.join(dest_folder, "*.jpg"))) > 0:
+            continue
+        tasks.append((src_path, dest_folder))
+
+    logger.info(f"   Tasks to process: {len(tasks)} (Skipped {len(video_files) - len(tasks)} already done)")
+
+    if not tasks:
+        logger.info("All files already processed!")
+        return
+
+    # Thread local for KeyFrameExtractor
+    thread_data = threading.local()
+
+    def get_extractor():
+        if not hasattr(thread_data, "extractor"):
+            thread_data.extractor = KeyFrameExtractor(threshold=30.0, max_frames=75, min_frames=10)
+        return thread_data.extractor
+
+    def process_item(item):
+        src, dst_folder = item
+        try:
+            extractor = get_extractor()
+            frames = extractor.extract_from_video(src)
+            extractor.save_as_images(frames, dst_folder)  # Save as JPEG images
+            return True
+        except Exception as e:
+            logger.error(f"Error {src}: {e}")
+            return False
+
+    logger.info(f"Starting processing with {batch_size} threads...")
+    with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        list(tqdm(
+            executor.map(process_item, tasks),
+            total=len(tasks),
+            unit="vid"
+        ))
+
+    volume.commit()
+    logger.info("KeyFrame Extraction Complete & Volume Committed")
+
+
+# --- STAGE 3: EXTRACT (GPU, Batch) ---
+@app.function(
+    image=extract_image,
+    volumes={"/mnt": volume},
+    gpu="A100", # Need A100 for fast ResNet/Whisper inference
+    timeout=3600*6
+)
+def run_extract_stage(dataset_name: str, input_path: str, output_path: str, manifest_path: str):
+    sys.path.append("/root")
+    from src.utils.logging_utils import setup_logger
+    logger = setup_logger("Preprocess:Extract")
     
-    # Apply limits - use time-based seed for random TAR selection each run
-    import time
-    random.seed(int(time.time()))  # Different selection each run
-    if MAX_TRAIN_TARS:
-        train_tars = random.sample(train_tars, min(len(train_tars), MAX_TRAIN_TARS))
-    if MAX_TEST_TARS:
-        test_tars = random.sample(test_tars, min(len(test_tars), MAX_TEST_TARS))
+    logger.info(f"Starting Stage 3: Feature Extraction ({dataset_name.upper()})")
+    logger.info(f"   Input (Cropped): {input_path}")
+    logger.info(f"   Output (Features): {output_path}")
     
-    # Print selected TARs for tracking
-    print(f"\n📋 Selected TARs (random seed: {int(time.time())})")
-    for t in sorted(train_tars):
-        print(f"   - {Path(t).name}")
+    if not os.path.exists(input_path):
+        logger.error(f"Input path {input_path} not found. Run 'crop' stage first.")
+        return
+
+    os.makedirs(os.path.dirname(manifest_path), exist_ok=True)
+    os.makedirs(output_path, exist_ok=True)
     
-    processing_list = [(t, False) for t in train_tars] + [(t, True) for t in test_tars]
+    # Init Processor via Factory
+    # use_precropped=True is KEY here to skip MediaPipe re-detection
+    processor = get_preprocessor(dataset_name, data_root=input_path, use_precropped=True)
     
-    print(f"\n Processing {len(processing_list)} TARs")
-    print(f"   Train: {len(train_tars)}")
-    print(f"   Test:  {len(test_tars)}")
+    # Run Extraction with output_dir to save features in correct location
+    processor.run(output_manifest=manifest_path, output_dir=output_path)
     
-    # Process
-    print(f"\nStep 3: Processing...")
-    processor = DataProcessor()
+    volume.commit()
+    logger.info("Extraction Complete & Volume Committed")
+
+
+# --- ENTRYPOINT ---
+@app.local_entrypoint()
+def main(
+    stage: str = "crop",      # 'crop' or 'extract' (keyframe removed - SOTA uses full frames)
+    dataset: str = "grid",    # 'grid' or 'vicocktail'
+    batch_size: int = 16,     # For crop stage
+):
+    """
+    Unified Preprocessing CLI (SOTA: Full Frames, no keyframe selection)
+    Usage:
+       modal run scripts/modal/preprocess.py --stage crop --dataset grid
+       modal run scripts/modal/preprocess.py --stage extract --dataset grid
+    """
+    sys.path.append(os.getcwd())
+    from src.utils.logging_utils import setup_logger
+    logger = setup_logger("Preprocess:Main")
+
+    # PATH CONFIGURATION
+    # You can extend this map for new datasets
+    DATA_CONFIG = {
+        "grid": {
+            "raw": "/mnt/grid",
+            "cropped": "/mnt/grid_cropped",
+            "features": "/mnt/processed_features/grid",
+            "manifest": "/mnt/manifests/grid_manifest.jsonl"
+        },
+        "vicocktail": {
+            "raw": "/mnt/vicocktail/raw",
+            "cropped": "/mnt/vicocktail_cropped",
+            "features": "/mnt/processed_features/vicocktail",
+            "manifest": "/mnt/manifests/vicocktail_manifest.jsonl"
+        }
+    }
     
-    results = []
-    for i, result in enumerate(processor.process_tar_file.starmap(processing_list, return_exceptions=True, wrap_returned_exceptions=False)):
-        if isinstance(result, Exception):
-            print(f"  Error in task {i}: {result}")
-        else:
-            print(f"  Finished: {result['tar_name']}")
-            results.append(result)
-    
-    # Generate manifests
-    if results:
-        print("\nStep 4: Generating manifests...")
-        create_manifests.remote(results)
-    
-    print(f"\n{'='*70}")
-    print("🎉 COMPLETE")
-    print(f"{'='*70}")
+    cfg = DATA_CONFIG.get(dataset.lower())
+    if not cfg:
+        logger.error(f"Dataset '{dataset}' not configured in preprocess.py")
+        return
+
+    if stage == "crop":
+        run_crop_stage.remote(
+            dataset_name=dataset, 
+            input_path=cfg["raw"], 
+            output_path=cfg["cropped"], 
+            batch_size=batch_size
+        )
+        
+    elif stage == "extract":
+        run_extract_stage.remote(
+            dataset_name=dataset,
+            input_path=cfg["cropped"],
+            output_path=cfg["features"],
+            manifest_path=cfg["manifest"]
+        )
+    else:
+        logger.error(f"Unknown stage: {stage}. Valid: crop, extract")

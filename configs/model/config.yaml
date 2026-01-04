@@ -21,7 +21,7 @@ data:
   train_manifest: "./data/manifests/train.jsonl"
   val_manifest: "./data/manifests/val.jsonl"
   data_root: "./data"
-  batch_size: 32              
+  batch_size: 16         
   num_workers: 4
 
   max_train_samples: null     

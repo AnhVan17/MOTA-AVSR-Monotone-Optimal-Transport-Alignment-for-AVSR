@@ -1,69 +1,72 @@
+
 import torch
 from torch.nn.utils.rnn import pad_sequence
 from typing import List, Dict
 
-def collate_fn(batch: List[Dict]) -> Dict:
-    """
-    Custom collate function for AVSR (Audio-Visual Speech Recognition).
-    Handles padding for variable-length visual inputs and text targets.
+# SOTA standard: Use -100 for ignore_index in PyTorch Loss functions
+IGNORE_INDEX = -100 
 
-    Args:
-        batch (List[Dict]): A list of samples from the Dataset. 
-                            Each sample dict contains:
-                            - 'audio': (80, 3000)
-                            - 'visual': (T, C, H, W) or (T, Feature_Dim)
-                            - 'target': (L,) -> Token IDs
-                            - 'text': str
-                            - 'rel_path': str
-
-    Returns:
-        Dict: A batched dictionary ready for the model.
+def avsr_collate_fn(batch: List[Dict]) -> Dict:
     """
+    Collate function for AVSR training (Grid & ViCocktail).
     
-    # 1. Process Audio
-    # Since Whisper requires fixed input (30s), audio is already (80, 3000).
-    # We just stack them: (Batch_Size, 80, 3000)
-    audio_batch = torch.stack([s['audio'] for s in batch])
+    Handles:
+    - Variable length Audio & Visual inputs (Padding)
+    - Target Token Padding (using -100 for Ignore Index)
+    - Attention Masks (Bool)
+    - Sequence Lengths (Int) - needed for CTC Loss
     
-    # 2. Process Visual
-    # Visual frames/features have variable length T. We need to pad them.
+    Compatible with:
+    - FeatureDataset (Phase 1)
+    - RawVideoDataset (Phase 2)
+    """
+    # Filter out None or invalid samples
+    batch = [b for b in batch if b is not None]
+    if not batch:
+        return {}
+
+    # 1. Audio (Pad with 0.0)
+    audio_list = [s['audio'] for s in batch]
+    # Audio Lengths (for packing or masking)
+    audio_lens = torch.tensor([a.size(0) for a in audio_list], dtype=torch.long)
+    audio_batch = pad_sequence(audio_list, batch_first=True, padding_value=0.0)
+    
+    # Create Attention Mask (True = Valid, False = Pad)
+    # [B, T_max]
+    B, T_a_max = audio_batch.shape[:2]
+    # Keep on CPU or same device as input? Usually CPU for collate, moved to GPU later.
+    audio_mask = torch.arange(T_a_max).expand(B, T_a_max) < audio_lens.unsqueeze(1)
+
+    # 2. Visual (Pad with 0.0)
     visual_list = [s['visual'] for s in batch]
-    
-    # Pad sequence with 0.0. 
-    # batch_first=True makes output (Batch, T_max, ...)
+    visual_lens = torch.tensor([v.size(0) for v in visual_list], dtype=torch.long)
     visual_batch = pad_sequence(visual_list, batch_first=True, padding_value=0.0)
     
-    # Create Attention Mask / Time Mask for Visual inputs
-    # 1 (True) = Real frame, 0 (False) = Padding
-    # Shape: (Batch_Size, T_max)
-    batch_size = len(batch)
-    max_visual_len = visual_batch.size(1)
-    visual_mask = torch.zeros((batch_size, max_visual_len), dtype=torch.bool)
+    B, T_v_max = visual_batch.shape[:2]
+    visual_mask = torch.arange(T_v_max).expand(B, T_v_max) < visual_lens.unsqueeze(1)
+
+    # 3. Targets (Pad with IGNORE_INDEX for Loss calculation)
+    # Whisper pad token is usually 50257, but for Loss we want -100
+    target_batch = None
+    target_lens = None
     
-    for i, v in enumerate(visual_list):
-        # Mark valid frames as True
-        visual_mask[i, :v.size(0)] = True
-        
-    # 3. Process Targets (Labels)
-    # Token sequences also have variable lengths.
-    # Use padding_value = -100 (PyTorch CrossEntropyLoss ignore_index)
     if 'target' in batch[0]:
         target_list = [s['target'] for s in batch]
-        target_batch = pad_sequence(target_list, batch_first=True, padding_value=-100)
-    else:
-        # Fallback if target is missing (e.g., inference mode without labels)
-        target_batch = None
+        target_lens = torch.tensor([t.size(0) for t in target_list], dtype=torch.long)
+        
+        # IMPORTANT: Pad with -100 so CrossEntropyLoss ignores it automatically
+        # This is CRITICAL for variable length transcriptions (Grid is fixed, but Vicocktail is NOT)
+        target_batch = pad_sequence(target_list, batch_first=True, padding_value=IGNORE_INDEX)
 
-    # 4. Collect Metadata
-    # Useful for debugging or calculating PER/WER later
-    texts = [s.get('text', '') for s in batch]
-    rel_paths = [s.get('rel_path', '') for s in batch]
-    
     return {
-        'audio': audio_batch,       # (B, 80, 3000)
-        'visual': visual_batch,     # (B, T_max, C, H, W) or (B, T_max, 512)
-        'visual_mask': visual_mask, # (B, T_max)
-        'target': target_batch,     # (B, L_max)
-        'text': texts,              # List[str]
-        'rel_paths': rel_paths      # List[str]
+        'audio': audio_batch,        # [B, T_a, D_a]
+        'visual': visual_batch,      # [B, T_v, D_v]
+        'audio_len': audio_lens,     # [B]
+        'visual_len': visual_lens,   # [B]
+        'audio_mask': audio_mask,    # [B, T_a] (Bool)
+        'visual_mask': visual_mask,  # [B, T_v] (Bool)
+        'target': target_batch,      # [B, L]
+        'target_len': target_lens,   # [B]
+        'text': [s.get('text', '') for s in batch],
+        'rel_paths': [s.get('rel_path', '') for s in batch]
     }

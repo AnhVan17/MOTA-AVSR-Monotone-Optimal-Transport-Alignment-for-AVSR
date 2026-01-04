@@ -1,14 +1,24 @@
 import os
 import glob
 from .base import BasePreprocessor
+from src.utils.logging_utils import setup_logger
+
+logger = setup_logger(__name__)
 
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 
+try:
+    from src.utils.text_cleaning import normalize_text
+except ImportError:
+    import sys
+    sys.path.append(os.getcwd())
+    from src.utils.text_cleaning import normalize_text
+
 class GridPreprocessor(BasePreprocessor):
     def collect_metadata(self):
         # GRID: Recursively find all video files (.mpg or .mp4)
-        print(f"   [Grid] Scanning for video files in {self.data_root}...")
+        logger.info(f"[Grid] Scanning for video files in {self.data_root}...")
         
         # Support both original .mpg and cropped .mp4
         extensions = ['*.mpg', '*.mp4']
@@ -16,7 +26,7 @@ class GridPreprocessor(BasePreprocessor):
         for ext in extensions:
              video_files.extend(glob.glob(os.path.join(self.data_root, "**", ext), recursive=True))
              
-        print(f"   [Grid] Found {len(video_files)} video files.")
+        logger.info(f"[Grid] Found {len(video_files)} video files.")
         
         # Parallel Processing Function
         def process_one(video_path):
@@ -31,7 +41,7 @@ class GridPreprocessor(BasePreprocessor):
             }
 
         # Run with ThreadPool
-        print(f"   [Grid] Metadata check running with multiple threads...")
+        logger.info(f"[Grid] Metadata check running with multiple threads...")
         results = []
         with ThreadPoolExecutor(max_workers=16) as executor:
             # Use list() to trigger execution and tqdm to show progress
@@ -89,7 +99,10 @@ class GridPreprocessor(BasePreprocessor):
                             word = parts[2]
                             if word not in ['sil', 'sp']:
                                 words.append(word)
-                return " ".join(words)
+                
+                raw_text = " ".join(words)
+                return normalize_text(raw_text)
+                
         except Exception:
             pass
         return ""

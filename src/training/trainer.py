@@ -10,13 +10,14 @@ import torch.nn as nn
 from torch.cuda.amp import autocast, GradScaler
 from pathlib import Path
 import yaml
+import math
 from tqdm import tqdm
 import logging
 
 # Absolute imports - works both local and Modal
-from data.tokenizer_old import VietnameseCharTokenizer
-from data.dataset_old import create_dataloaders
-from src.models.aurora_xt import create_model
+from src.data.tokenizers.whisper import WhisperTokenizer
+from src.data.loader import build_dataloader
+from src.models.mota import create_model
 from src.training.losses import create_loss
 from src.evaluation.evaluator import Evaluator
 
@@ -42,8 +43,15 @@ class Trainer:
         
         # Initialize tokenizer
         print("📝 Initializing tokenizer...")
-        self.tokenizer = VietnameseCharTokenizer()
-        self.config['model']['vocab_size'] = self.tokenizer.vocab_size
+        self.tokenizer = WhisperTokenizer()
+        
+        # <--- FIX: SỬA LỖI VOCAB SIZE TẠI ĐÂY --->
+        # Sử dụng len() để lấy kích thước thực bao gồm cả special tokens (timestamps, bos, eos...)
+        # Thay vì self.tokenizer.vocab_size (chỉ trả về kích thước base)
+        # FIX: Whisper uses special tokens (timestamps) > 50257. Max is usually 51865.
+        # We explicitly set a large enough vocab size to prevent Embedding crash.
+        self.config['model']['vocab_size'] = 51865
+        # <---------------------------------------->
         
         # Create model
         print("🏗️ Creating model...")
@@ -53,6 +61,7 @@ class Trainer:
         print(f"   Total params: {total_params:,} (~{total_params*4/1024**2:.1f}MB)")
         
         # Create loss
+        # Config đã được update vocab_size mới ở trên, nên loss sẽ được tạo đúng
         self.criterion = create_loss(self.config)
         
         # Create optimizer
@@ -62,12 +71,27 @@ class Trainer:
             weight_decay=float(self.config['training']['weight_decay'])
         )
         
-        # Create scheduler
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        # Create scheduler with warmup
+        # Warmup helps CTC training converge better
+        warmup_epochs = self.config['training'].get('warmup_epochs', 5)
+        total_epochs = self.config['training']['num_epochs']
+        
+        def lr_lambda(epoch):
+            if epoch < warmup_epochs:
+                # Linear warmup
+                return (epoch + 1) / warmup_epochs
+            else:
+                # Cosine annealing after warmup
+                progress = (epoch - warmup_epochs) / max(1, total_epochs - warmup_epochs)
+                min_lr = float(self.config['training'].get('min_lr', 1e-6))
+                base_lr = float(self.config['training']['learning_rate'])
+                return min_lr/base_lr + (1 - min_lr/base_lr) * 0.5 * (1 + math.cos(math.pi * progress))
+        
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer,
-            T_max=self.config['training']['num_epochs'],
-            eta_min=float(self.config['training'].get('min_lr', 1e-6))
+            lr_lambda=lr_lambda
         )
+        print(f"   Scheduler: Warmup {warmup_epochs} epochs + Cosine Annealing")
         
         # Mixed precision
         self.use_amp = self.config['training'].get('use_amp', True)
@@ -75,14 +99,16 @@ class Trainer:
         
         # Create dataloaders
         print("📊 Loading data...")
-        self.dataloaders = create_dataloaders(
-            train_manifest=self.config['data']['train_manifest'],
-            val_manifest=self.config['data']['val_manifest'],
-            batch_size=self.config['data']['batch_size'],
-            num_workers=self.config['data']['num_workers'],
-            data_root=self.config['data']['data_root'],
-            max_train_samples=self.config['data'].get('max_train_samples'),
-            max_val_samples=self.config['data'].get('max_val_samples')
+        self.dataloaders = {}
+        self.dataloaders['train'] = build_dataloader(
+            config=self.config['data'],
+            tokenizer=self.tokenizer,
+            mode='train'
+        )
+        self.dataloaders['val'] = build_dataloader(
+            config=self.config['data'],
+            tokenizer=self.tokenizer,
+            mode='val'
         )
         
         print(f"   Train batches: {len(self.dataloaders['train'])}")
@@ -121,11 +147,24 @@ class Trainer:
             audio = batch['audio'].to(self.device)
             visual = batch['visual'].to(self.device)
             target = batch['target'].to(self.device)
-            target_mask = batch['target_mask'].to(self.device)
+            
+            # Load lengths for masking (CRITICAL FIX)
+            audio_len = batch.get('audio_len').to(self.device) if 'audio_len' in batch else None
+            visual_len = batch.get('visual_len').to(self.device) if 'visual_len' in batch else None
             
             # Forward with mixed precision
             with autocast(enabled=self.use_amp):
-                outputs = self.model(audio, visual, target)
+                # Now passing lengths to MOTA model
+                outputs = self.model(
+                    audio=audio, 
+                    visual=visual,
+                    audio_len=audio_len,
+                    visual_len=visual_len,
+                    target=target
+                )
+                
+                # Create target_mask: True for valid tokens, False for padding (-100)
+                target_mask = (target != -100)
                 
                 loss_dict = self.criterion(
                     ctc_logits=outputs['ctc_logits'],

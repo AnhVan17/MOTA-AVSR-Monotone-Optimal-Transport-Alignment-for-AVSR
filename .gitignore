@@ -1,3 +1,4 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -12,44 +13,104 @@ env/
 pip-wheel-metadata/
 build/
 dist/
+
+# Debug/Test files (scripts/)
 verify_pipeline.py
 train_debug.yaml
 test_ctc_decode.py
+verify_data.py
+test_*.py
+debug_*.py
+*_debug.py
+*_test.py
+validate_pipeline.py
+run_vicocktail_pipeline.py
+test_audio_only_local.py
+test_whisper_baseline.py
+list_checkpoints.py
+check_processed_data.py
+check_tokenizer.py
+# Debug/Test files (scripts/modal/)
+scripts/modal/check_volume.py
+scripts/modal/cleanup_volume.py
+scripts/modal/debug_crop.py
+scripts/modal/unpack_vicocktail_optimized.py
+scripts/modal/check_manifests.py
+scripts/modal/inspect_data.py
+scripts/modal/preprocessing_modal.py
 
+# Deprecated/Experimental preprocessing
+src/data/augmented_preprocessing.py
+src/data/vicocktail_preprocessing_with_noise.py
+src/data/vietnamese_noise_augmentation.py
+
+# Deprecated model files
+src/models/fusion/aurora_xt_model.py
+src/models/aurora_xt.py
+
+# Markdown files (except README)
+*.md
+!README.md
+!CHANGELOG.md
+
+# Jupyter
 .ipynb_checkpoints/
+*.ipynb
 
+# Training artifacts
 logs/
 checkpoints/
 runs/
 *.log
+wandb/
+outputs/
 
+# Data & Cache
 data/hf_cache/
 data/processed/
 data/tmp/
+data/raw/
 cache/
 .cache/
 **/.DS_Store
+
+# Media files (large)
 *.mp4
 *.wav
 *.flac
 *.webm
 *.mkv
 *.avi
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# Archives
 *.zip
 *.tar
 *.tar.gz
+*.rar
+*.7z
 
+# Modal
 .modal/
 modal_artifacts/
 volumes/
 
+# IDE & OS
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+*.swp
+*.swo
+*~
 
-
-# untrack folders
+# Untrack folders
 notebooks/
-
 docs/
+artifacts/
+
+# HuggingFace cache
+~/.cache/huggingface/

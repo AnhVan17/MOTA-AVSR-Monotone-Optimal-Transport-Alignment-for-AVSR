@@ -224,7 +224,7 @@ class HybridDecoder(nn.Module):
         
         # Attention decoder
         self.target_embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_encoding = self._create_pos_encoding(d_model, 512)
+        self.pos_encoding = self._create_pos_encoding(d_model, 2048)
         
         decoder_layer = nn.TransformerDecoderLayer(
             d_model=d_model,
@@ -276,15 +276,23 @@ class HybridDecoder(nn.Module):
         if target is not None:
             B, L = target.shape
             
-            # Embed targets
-            target_embed = self.target_embedding(target)
+            # Embed targets (handle -100 padding for CE loss compatibility)
+            target_input = target.masked_fill(target == -100, 0)
+            target_input = target_input.clamp(0, self.vocab_size - 1)
+            target_embed = self.target_embedding(target_input)
             
-            # Add positional encoding
-            pos = self.pos_encoding[:, :L, :].to(encoder_out.device)
+            # Add positional encoding (Safe slice)
+            seq_len = target_embed.size(1)
+            max_pos = self.pos_encoding.size(1)
+            if seq_len > max_pos:
+                target_embed = target_embed[:, :max_pos, :]
+                seq_len = max_pos
+            
+            pos = self.pos_encoding[:, :seq_len, :].to(encoder_out.device)
             target_embed = target_embed + pos
             
             # Create causal mask
-            causal_mask = nn.Transformer.generate_square_subsequent_mask(L)
+            causal_mask = nn.Transformer.generate_square_subsequent_mask(seq_len)
             causal_mask = causal_mask.to(encoder_out.device)
             
             # Decode

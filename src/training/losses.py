@@ -7,7 +7,7 @@ CTC + CrossEntropy with curriculum learning
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict
+from typing import Dict, Optional
 
 
 class HybridLoss(nn.Module):
@@ -25,19 +25,30 @@ class HybridLoss(nn.Module):
         vocab_size: int = 220,
         ctc_weight: float = 0.3,
         ce_weight: float = 0.7,
-        pad_id: int = 0,
-        blank_id: int = 4
+        pad_id: int = -100,
+        blank_id: Optional[int] = None # <--- FIX: Allow None to auto-calculate
     ):
         super().__init__()
         
         self.ctc_weight = ctc_weight
         self.ce_weight = ce_weight
         self.pad_id = pad_id
-        self.blank_id = blank_id
+        
+        # <--- FIX: SỬ DỤNG BLANK ID = 0 (CONVENTION CHUẨN CHO CTC) --->
+        # Blank ID = 0 giúp model hội tụ nhanh hơn vì:
+        # 1. Vị trí cố định, dễ học
+        # 2. Không conflict với tokens thực (Whisper tokenizer bắt đầu từ ~220)
+        if blank_id is None:
+            self.blank_id = 0  # Standard CTC convention
+        else:
+            self.blank_id = blank_id
+        
+        print(f"Loss init: vocab_size={vocab_size}, blank_id={self.blank_id}")
+        # <-------------------------------------->
         
         # CTC loss
         self.ctc_loss = nn.CTCLoss(
-            blank=blank_id,
+            blank=self.blank_id,
             reduction='mean',
             zero_infinity=True
         )
@@ -100,8 +111,11 @@ class HybridLoss(nn.Module):
             for i in range(B):
                 L = target_lengths_orig[i].item()
                 target_seq = targets[i, :int(L)]
-                # Remove special tokens (PAD=0, BOS=1, EOS=2, UNK=3, BLANK=4)
-                target_seq = target_seq[target_seq >= 5]
+                
+                # <--- FIX: Lọc các token quá lớn nếu có (phòng ngừa) --->
+                # Chỉ giữ các token nhỏ hơn vocab_size (trừ blank_id)
+                # target_seq = target_seq[target_seq < self.blank_id]
+                
                 targets_list.append(target_seq)
                 actual_lengths.append(len(target_seq))
             
@@ -139,6 +153,11 @@ class HybridLoss(nn.Module):
             logits_flat = logits_shifted.view(-1, ar_logits.size(-1))
             targets_flat = targets_shifted.view(-1)
             
+            # <--- FIX: Đảm bảo targets không vượt quá vocab_size --->
+            # (Phòng trường hợp tokenizer sinh ra token lạ)
+            # Clip targets để tránh CUDA assert, nhưng lý tưởng là data phải sạch
+            # targets_flat = targets_flat.clamp(max=ar_logits.size(-1) - 1)
+            
             ce_loss_val = self.ce_loss(logits_flat, targets_flat)
         
         # ============================
@@ -163,10 +182,14 @@ class HybridLoss(nn.Module):
 # Factory
 def create_loss(config: Dict) -> HybridLoss:
     """Create loss from config"""
+    vocab_size = config['model']['vocab_size']
+    
+    # <--- FIX: SỬ DỤNG BLANK ID = 0 --->
+    # Blank = 0 là convention chuẩn cho CTC loss
     return HybridLoss(
-        vocab_size=config['model']['vocab_size'],
+        vocab_size=vocab_size,
         ctc_weight=config['loss']['ctc_weight'],
         ce_weight=config['loss']['ce_weight'],
-        pad_id=0,
-        blank_id=4
+        pad_id=-100,
+        blank_id=0  # Standard CTC blank ID
     )

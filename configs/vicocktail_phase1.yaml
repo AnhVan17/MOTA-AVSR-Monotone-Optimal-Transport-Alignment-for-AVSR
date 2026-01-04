@@ -1,0 +1,49 @@
+# AURORA-XT Phase 1 Configuration (Vicocktail)
+# Pre-training on Vicocktail Features (Fast Training)
+
+# Model Architecture
+model:
+  audio_dim: 768            # Whisper Small/Tiny
+  visual_dim: 512           # ResNet18
+  d_model: 256              # Internal dimension
+  num_encoder_layers: 6
+  num_decoder_layers: 4
+  num_heads: 4
+  vocab_size: 51865         # Whisper Tokenizer Full Vocab (50257 base + special tokens)
+  dropout: 0.1
+
+# Loss Configuration
+loss:
+  ctc_weight: 0.3
+  ce_weight: 0.7
+
+# Data Configuration
+data:
+  train_manifest: "/mnt/processed/manifests/train.jsonl" # Modal path
+  val_manifest: "/mnt/processed/manifests/val.jsonl"     # Modal path
+  test_manifest: "/mnt/processed/manifests/test.jsonl"   # Modal path
+  data_root: "/mnt/processed/features/vicocktail"        # Path where .pt files are
+  batch_size: 16            # Reduced from 64 to fix CUDA OOM
+  num_workers: 8
+  
+  max_train_samples: null
+  max_val_samples: null
+
+# Training Configuration
+training:
+  num_epochs: 50
+  learning_rate: 5e-5        # Reduced from 1e-4 for better CTC convergence
+  min_lr: 1e-6
+  warmup_epochs: 5           # Warmup phase for CTC training
+  weight_decay: 0.01
+  gradient_clip: 1.0         # Reduced from 2.0 for stability
+  use_amp: true              # Mixed Precision
+
+# Evaluation
+max_eval_batches: 50
+
+# Logging & Checkpointing
+use_wandb: true
+wandb_project: "aurora-xt-vicocktail"
+wandb_run: "phase1_features"
+checkpoint_dir: "/mnt/checkpoints/phase1"
