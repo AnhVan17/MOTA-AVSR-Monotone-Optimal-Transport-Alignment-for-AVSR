@@ -82,13 +82,13 @@ def get_preprocessor(dataset_name, data_root, use_precropped=False):
         raise ValueError(f"Unknown dataset: {dataset_name}")
 
 
-# --- STAGE 1: CROP (Hybrid Logic - The most critical part for optimization) ---
+# --- STAGE 1: CROP ---
 @app.function(
     image=crop_image,
     volumes={"/mnt": volume},
-    gpu="T4",      # Cheap GPU support
-    cpu=16.0,      # High CPU for parallelism (Needed for ViCocktail)
-    memory=65536,  # 64GB RAM for safety with large files
+    gpu="T4",      
+    cpu=16.0,      
+    memory=65536,  
     timeout=3600*12
 )
 def run_crop_stage(dataset_name: str, input_path: str, output_path: str, batch_size: int = 16):
@@ -100,13 +100,8 @@ def run_crop_stage(dataset_name: str, input_path: str, output_path: str, batch_s
     logger.info(f"   Input: {input_path}")
     logger.info(f"   Output: {output_path}")
 
-    # OPTIMIZATION: Check dataset to use the best strategy
+
     if dataset_name.lower() == "vicocktail":
-        # Strategy A: Specialized ViCocktail
-        # Use the dedicated class method which handles:
-        # - Transcript matching (.txt, .label)
-        # - Audio merging (FFmpeg)
-        # - Parallel processing internal management
         logger.info(">> Using Optimized ViCocktail Pipeline")
         from src.data.preprocessors.vicocktail import ViCocktailPreprocessor
         
@@ -114,8 +109,6 @@ def run_crop_stage(dataset_name: str, input_path: str, output_path: str, batch_s
         preprocessor.phase1_crop_dataset(save_dir=output_path, max_workers=batch_size)
         
     else:
-        # Strategy B: Generic Grid (Fast Path)
-        # Use simpler file-to-file logic for Grid which is uniform
         logger.info(">> Using Generic Pipeline (Grid/LRS3)")
         from src.data.preprocessors.cropper import MouthCropper
         

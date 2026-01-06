@@ -27,19 +27,31 @@ def avsr_collate_fn(batch: List[Dict]) -> Dict:
 
     # 1. Audio (Pad with 0.0)
     audio_list = [s['audio'] for s in batch]
-    # Audio Lengths (for packing or masking)
-    audio_lens = torch.tensor([a.size(0) for a in audio_list], dtype=torch.long)
+    
+    # CRITICAL FIX: Use actual lengths from dataset if available
+    # The dataset now computes actual lengths by detecting trailing zeros
+    if 'audio_len' in batch[0]:
+        audio_lens = torch.tensor([s['audio_len'] for s in batch], dtype=torch.long)
+    else:
+        # Fallback: use tensor size (may include padding!)
+        audio_lens = torch.tensor([a.size(0) for a in audio_list], dtype=torch.long)
+    
     audio_batch = pad_sequence(audio_list, batch_first=True, padding_value=0.0)
     
     # Create Attention Mask (True = Valid, False = Pad)
     # [B, T_max]
     B, T_a_max = audio_batch.shape[:2]
-    # Keep on CPU or same device as input? Usually CPU for collate, moved to GPU later.
     audio_mask = torch.arange(T_a_max).expand(B, T_a_max) < audio_lens.unsqueeze(1)
 
     # 2. Visual (Pad with 0.0)
     visual_list = [s['visual'] for s in batch]
-    visual_lens = torch.tensor([v.size(0) for v in visual_list], dtype=torch.long)
+    
+    # CRITICAL FIX: Use actual lengths from dataset if available
+    if 'visual_len' in batch[0]:
+        visual_lens = torch.tensor([s['visual_len'] for s in batch], dtype=torch.long)
+    else:
+        visual_lens = torch.tensor([v.size(0) for v in visual_list], dtype=torch.long)
+    
     visual_batch = pad_sequence(visual_list, batch_first=True, padding_value=0.0)
     
     B, T_v_max = visual_batch.shape[:2]

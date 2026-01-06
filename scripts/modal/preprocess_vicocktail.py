@@ -3,9 +3,10 @@ import modal
 import os
 import sys
 import glob
+import re
 
 # --- Config ---
-APP_NAME = "avsr-preprocess-vicocktail-v233"  # Changed to force rebuild
+APP_NAME = "avsr-preprocess-vicocktail-v2"  
 VOLUME_NAME = "avsr-dataset-volume"
 
 # --- Image Definitions ---
@@ -18,8 +19,8 @@ def get_base_image():
             "ffmpeg", 
             "libsndfile1", 
             "git",
-            "libegl1",      # Required by MediaPipe
-            "libgles2-mesa" # Required by MediaPipe
+            "libegl1",      
+            "libgles2-mesa" 
         )
         .pip_install("numpy<2", "tqdm")
     )
@@ -30,7 +31,7 @@ crop_image = (
         "numpy==1.26.4",
         "opencv-python-headless", 
         "mediapipe==0.10.9",
-        "torch",            # Required by vicocktail.py import
+        "torch",            
         "timm", 
         "transformers", 
         "soundfile",
@@ -55,11 +56,11 @@ extract_image = (
 
 app = modal.App(APP_NAME)
 
-# --- Volumes ---
-# Vol 1: INPUT (Raw Data) - High Inode Usage (~493k)
+
+# Vol 1: INPUT (Raw Data) 
 vol_raw = modal.Volume.from_name("avsr-dataset-volume", create_if_missing=True)
 
-# Vol 2: OUTPUT (processed data) - Fresh Volume
+# Vol 2: OUTPUT (processed data) 
 vol_processed = modal.Volume.from_name("avsr-vicocktail-processed", create_if_missing=True)
 
 # --- PATHS ---
@@ -82,9 +83,9 @@ VC_MANIFEST = "/mnt/processed/manifests/train.jsonl"
         VC_RAW_MOUNT: vol_raw,
         VC_PROCESSED_MOUNT: vol_processed
     },
-    cpu=2.0,           # Lower CPU per worker
-    memory=8192,       # 8GB RAM is plenty for 1 video
-    timeout=600        # 10 mins per video max
+    cpu=2.0,           
+    memory=8192,      
+    timeout=600        
 )
 def crop_video_task(video_path: str, data_root: str, save_dir: str):
     sys.path.append("/root")
@@ -97,8 +98,8 @@ def crop_video_task(video_path: str, data_root: str, save_dir: str):
         VC_RAW_MOUNT: vol_raw,
         VC_PROCESSED_MOUNT: vol_processed
     },
-    cpu=16.0,          # High CPU for Single-Container Mode
-    memory=65536,      # High RAM for Single-Container Mode
+    cpu=16.0,        
+    memory=65536,      
     timeout=3600*24
 )
 def run_crop_vicocktail_legacy(output_path: str = VC_CROPPED, max_workers: int = 8, limit: int = None):
@@ -109,10 +110,7 @@ def run_crop_vicocktail_legacy(output_path: str = VC_CROPPED, max_workers: int =
     logger = setup_logger("ViCocktail:Crop:Single")
     logger.info(f"Starting Single-Container Cropping (16 CPU, {max_workers} Workers)...")
     
-    # This uses ProcessPoolExecutor inside the 16-CPU container
-    # Since we fixed Streaming I/O, this is now safe from RAM OOM
     proc = ViCocktailPreprocessor(data_root=VC_RAW, use_precropped=False)
-    # Note: We don't have a direct 'limit' in phase1_crop_dataset but we can filter before
     proc.phase1_crop_dataset(save_dir=output_path, max_workers=max_workers)
     
     vol_processed.commit()
@@ -151,12 +149,12 @@ def run_crop_vicocktail_dist(output_path: str = VC_CROPPED, limit: int = None, c
     
     # 3. Execute distributed map
     success_count = 0
-    # concurrency_limit prevents overloading volume
-    for res in tqdm(crop_video_task.starmap(tasks, order_outputs=False, concurrency_limit=concurrency), total=len(tasks), desc="Distributed Crop"):
+    # max_containers limits parallel containers (Modal 1.0+ API)
+    for res in tqdm(crop_video_task.starmap(tasks, order_outputs=False, max_containers=concurrency), total=len(tasks), desc="Distributed Crop"):
         if res:
             success_count += 1
             
-    logger.info(f"✅ Completed: {success_count}/{len(video_files)}")
+    logger.info(f" Completed: {success_count}/{len(video_files)}")
     vol_processed.commit()
 
 
@@ -173,7 +171,6 @@ def run_crop_vicocktail_dist(output_path: str = VC_CROPPED, limit: int = None, c
 )
 def run_keyframe_vicocktail(input_path: str = VC_CROPPED, output_path: str = VC_KEYFRAMES, batch_size: int = 16):
     sys.path.append("/root")
-    # Same generic logic as Grid for Keyframes, just different paths/resources
     from concurrent.futures import ThreadPoolExecutor
     from src.data.preprocessors.base_preprocessor import KeyFrameExtractor
     from src.utils.logging_utils import setup_logger
@@ -214,7 +211,7 @@ def run_keyframe_vicocktail(input_path: str = VC_CROPPED, output_path: str = VC_
     vol_processed.commit()
 
 
-# --- STAGE 3: EXTRACT (Specialized) ---
+# --- STAGE 3: EXTRACT  ---
 @app.function(
     image=extract_image,
     volumes={
@@ -262,10 +259,18 @@ def run_extract_vicocktail():
     train_val_candidates = []
     
     for item in all_data:
-        # Heuristic: If 'test' is in the file path (case-insensitive) -> Test Set
-        # This handles cases where data is in 'Test' folder
+        # Robust path splitting: handle both / and \ (cross-platform)
+        # Check if any folder component contains 'test' (e.g., test001, test002, Test, etc.)
         rel_path = item.get('rel_path', '').lower()
-        if 'test' in rel_path.split(os.sep) or 'test' in os.path.basename(rel_path).lower():
+        
+        # Split by both / and \ to handle all path formats
+        path_parts = re.split(r'[/\\]', rel_path)
+        
+        # Check if ANY folder in the path CONTAINS 'test' 
+        # This handles: test001, avvn-test_snr_*, Test, etc.
+        is_test = any('test' in part for part in path_parts)
+        
+        if is_test:
             test_set.append(item)
         else:
             train_val_candidates.append(item)
@@ -290,7 +295,7 @@ def run_extract_vicocktail():
     save_split("val.jsonl", val_set)
     save_split("test.jsonl", test_set)
     
-    logger.info(f"✅ Split Summary:")
+    logger.info(f" Split Summary:")
     logger.info(f"   Train: {len(train_set)}")
     logger.info(f"   Val:   {len(val_set)}")
     logger.info(f"   Test:  {len(test_set)}")
@@ -303,7 +308,7 @@ def run_extract_vicocktail():
 
 
 @app.local_entrypoint()
-def main(stage: str = "crop", mode: str = "dist", limit: int = None, workers: int = 8):
+def main(stage: str = "crop", mode: str = "single", limit: int = None, workers: int = 8):
     """
     Usage:
         modal run scripts/modal/preprocess_vicocktail.py --stage crop --mode dist

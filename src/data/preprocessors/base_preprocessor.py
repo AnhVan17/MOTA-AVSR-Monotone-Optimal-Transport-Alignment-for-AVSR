@@ -37,8 +37,8 @@ class PreprocessConfig:
     AUDIO_LENGTH = 240000 # 15s * 16000
     
     # System Params
-    BATCH_SIZE = 256       # Increased for A100 (40-80GB VRAM)
-    NUM_WORKERS = 8 # Increase workers for parallel FaceMesh processing
+    BATCH_SIZE = 256       
+    NUM_WORKERS = 8 
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- 1. VIDEO PROCESSOR (Mouth Crop) ---
@@ -123,7 +123,7 @@ class VideoProcessor:
         Returns:
             Padded video tensor [C, target_frames, H, W]
         """
-        if video_tensor.dim() == 4: # [T, C, H, W] or [C, T, H, W] ?
+        if video_tensor.dim() == 4: # [T, C, H, W] or [C, T, H, W] 
             # Based on above process() return:
             # RGB: [T, C, H, W] (from permute(0,3,1,2) on (T,H,W,C)) -> Wait.
             # np array is (T, H, W, C).
@@ -634,17 +634,31 @@ class BasePreprocessor(ABC):
                             # Fallback if audio fails
                             audio_feats = torch.zeros((1, 768))
 
-                        # C. Save Combined .pt
+                        # C. Compute ACTUAL lengths (before any padding happened)
+                        # Visual: actual frames from video
+                        visual_len = len(video_tensor)  # Original number of frames
+                        
+                        # Audio: we need to track this from the waveform
+                        # Since audio_feats is from Whisper encoder, estimate from video frames
+                        # Rough ratio: audio_frames = visual_frames * (audio_fps / video_fps)
+                        # Whisper: 50 frames/second (30s audio -> 1500 frames)
+                        # Video: typically 25 fps
+                        # So audio_len ≈ visual_len * 2
+                        audio_len = min(visual_len * 2, audio_feats.size(0))
+
+                        # D. Save Combined .pt with LENGTHS
                         item = metadata_map.get(video_path)
                         text = item['text'] if item else ""
                         item_id = item.get('id', os.path.splitext(os.path.basename(video_path))[0])
 
                         save_dict = {
                             'id': item_id,
-                            'visual': visual_feats, # (T_v, 512)
-                            'audio': audio_feats,   # (T_a, 768)
+                            'visual': visual_feats,     # (T_v, 512)
+                            'audio': audio_feats,       # (T_a, 768) - may be padded
+                            'visual_len': visual_len,   # ADDED: actual visual frames
+                            'audio_len': audio_len,     # ADDED: actual audio frames (estimated)
                             'text': text,
-                            'path': video_path # Original path
+                            'path': video_path
                         }
                         
                         # Determine save path

@@ -1,7 +1,9 @@
 """
+MOTA: Multimodal Optimal Transport Alignment
+
 Architecture:
-- Audio: Whisper encoder (frozen) → 768
-- Visual: ResNet18/ViViT → 512/768
+- Audio: Whisper encoder (frozen) → 768dim
+- Visual: ResNet18 2D (per-frame) → 512dim
 - Fusion Stage 1: Quality gating (Coarse)
 - Fusion Stage 2: M-QOT + Guided Attention (Fine/Optional)
 - Encoder: Conformer (6 layers)
@@ -176,10 +178,6 @@ class MOTA(nn.Module):
         # ========================================
         # STAGE 3: Conformer Encoding
         # ========================================
-        # Conformer expects inputs, but should ideally take a mask for self-attention.
-        # Our implementation of ConformerBlock likely uses standard MHA.
-        # If lengths are provided, we should mask the padding positions in output.
-        
         encoded = fused
         for layer in self.encoder:
             encoded = layer(encoded)
@@ -187,11 +185,30 @@ class MOTA(nn.Module):
         # Feature masking post-encoding (zero out padding area)
         if audio_mask is not None:
             encoded = encoded * audio_mask.unsqueeze(-1).float()
+        
+        # DEBUG: Log encoder output stats (first forward only)
+        if not hasattr(self, '_logged_forward_debug'):
+            print("\n" + "="*80)
+            print("🔬 [MOTA DEBUG] Forward pass analysis:")
+            print("="*80)
+            print(f"   📥 Input Audio  - shape: {audio.shape}, mean: {audio.mean().item():.4f}, std: {audio.std().item():.4f}")
+            print(f"   📥 Input Visual - shape: {visual.shape}, mean: {visual.mean().item():.4f}, std: {visual.std().item():.4f}")
+            print(f"   🔀 After Fusion - mean: {fused.mean().item():.4f}, std: {fused.std().item():.4f}")
+            print(f"   🧠 After Encoder - mean: {encoded.mean().item():.4f}, std: {encoded.std().item():.4f}")
+            
+            # Check for dead neurons (all zeros)
+            zero_ratio = (encoded.abs() < 1e-6).float().mean().item()
+            print(f"   ⚠️  Encoder zero ratio: {zero_ratio*100:.1f}%")
+            
+            if zero_ratio > 0.5:
+                print("   ❌ CRITICAL: More than 50% of encoder output is ZERO!")
+            
+            print("="*80 + "\n")
+            self._logged_forward_debug = True
             
         # ========================================
         # STAGE 4: Hybrid Decoding
         # ========================================
-        # Decoder usually creates its own causal masks for attention
         decoder_out = self.decoder(encoded, target)
         
         outputs = {

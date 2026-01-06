@@ -3,6 +3,8 @@ Vicocktail Dataset for AVSR Training
 ====================================
 Inherits from FeatureDataset to support Phase 1 (Features) training
 with standardized augmentation and loading logic.
+
+FIXED: Removed _tokenize() override - now inherits correct encode_for_ctc() from base class
 """
 
 import torch
@@ -17,6 +19,8 @@ class VicocktailDataset(FeatureDataset):
     
     Inherits from FeatureDataset.
     Supports loading precomputed features (.pt) and optional Augmentation.
+    
+    NOTE: _tokenize() is inherited from base class which correctly uses encode_for_ctc()
     """
     
     def __init__(
@@ -46,18 +50,10 @@ class VicocktailDataset(FeatureDataset):
         )
         
         logger.debug(f"VicocktailDataset initialized with {len(self)} samples")
-
-    def _tokenize(self, text: str) -> torch.Tensor:
-        """
-        Override tokenize to add specific length constraints for Vicocktail if needed.
-        Whisper Decoder limit is typically 448 tokens.
-        """
-        token_ids = self.tokenizer.encode(text)
         
-        # Explicit truncation to 448 to match Whisper's max position embedding
-        # (Though usually handling in Collate is better, safety here is okay)
-        MAX_LEN = 448
-        if len(token_ids) > MAX_LEN:
-            token_ids = token_ids[:MAX_LEN]
-            
-        return torch.tensor(token_ids, dtype=torch.long)
+        # Verify tokenizer has encode_for_ctc
+        if not hasattr(self.tokenizer, 'encode_for_ctc'):
+            logger.warning("Tokenizer missing encode_for_ctc method!")
+    
+    # NO _tokenize() OVERRIDE!
+    # Inherited from base class which correctly uses encode_for_ctc()

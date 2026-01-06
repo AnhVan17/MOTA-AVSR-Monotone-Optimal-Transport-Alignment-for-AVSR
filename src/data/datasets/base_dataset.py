@@ -76,8 +76,15 @@ class BaseDataset(Dataset, ABC):
         pass
     
     def _tokenize(self, text: str) -> torch.Tensor:
-        """Tokenize text to tensor of token IDs"""
-        token_ids = self.tokenizer.encode(text)
+        """Tokenize text to tensor of token IDs for CTC training"""
+        # Use encode_for_ctc to remove special tokens
+        # CTC should only see content tokens, not <|startoftranscript|> etc.
+        if hasattr(self.tokenizer, 'encode_for_ctc'):
+            token_ids = self.tokenizer.encode_for_ctc(text)
+        else:
+            # Fallback for tokenizers without encode_for_ctc
+            token_ids = self.tokenizer.encode(text, add_special_tokens=False)
+        
         return torch.tensor(token_ids, dtype=torch.long)
 
 
@@ -98,6 +105,32 @@ class FeatureDataset(BaseDataset):
             self.augmenter = FeatureAugmenter(audio_conf=ac, visual_conf=vc) 
         else:
             self.augmenter = None
+    
+    def _get_actual_length(self, features: torch.Tensor, threshold: float = 1e-6) -> int:
+        """
+        Detect actual sequence length by finding where trailing zeros (padding) starts.
+        
+        Args:
+            features: [T, D] tensor
+            threshold: Values below this are considered padding
+            
+        Returns:
+            Actual length (non-padded portion)
+        """
+        # Sum absolute values along feature dimension
+        # Padding frames will have sum close to 0
+        frame_energy = features.abs().sum(dim=-1)  # [T]
+        
+        # Find last non-zero frame
+        non_zero_mask = frame_energy > threshold
+        
+        if not non_zero_mask.any():
+            return 1  # At least 1 frame
+        
+        # Find the last True index
+        actual_len = non_zero_mask.nonzero()[-1].item() + 1
+        
+        return actual_len
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         item = self.data[idx]
@@ -119,6 +152,25 @@ class FeatureDataset(BaseDataset):
             audio = data['audio'].float()
             visual = data['visual'].float()
             
+            # CRITICAL FIX: Compute actual lengths
+            # Visual: Can detect trailing zeros (works well)
+            visual_len = self._get_actual_length(visual)
+            
+            # Audio: Whisper encoder normalizes output, so no trailing zeros
+            # SOLUTION: Estimate audio_len from visual_len using frame rate ratio
+            # Typically: Audio ~50Hz (Whisper), Visual ~25fps → ratio ~2
+            # But since audio is already 1500 frames for ~10 sec and visual ~150 frames
+            # The ratio is closer to audio_total / visual_total
+            audio_total = audio.size(0)
+            visual_total = visual.size(0)
+            
+            if visual_total > 0 and visual_len > 0:
+                # Scale audio_len proportionally to visual_len
+                ratio = audio_total / visual_total
+                audio_len = min(int(visual_len * ratio), audio_total)
+            else:
+                audio_len = audio_total
+            
             # Apply Augmentation if enabled
             if self.augmenter is not None:
                 audio, visual = self.augmenter(audio, visual)
@@ -126,6 +178,8 @@ class FeatureDataset(BaseDataset):
             return {
                 'audio': audio,   # [T_a, 768]
                 'visual': visual, # [T_v, 512]
+                'audio_len': audio_len,   # Estimated from visual
+                'visual_len': visual_len, # Detected from zeros
                 'target': target,
                 'text': text,
                 'rel_path': rel_path
@@ -136,6 +190,8 @@ class FeatureDataset(BaseDataset):
             return {
                 'audio': torch.zeros(300, 768),
                 'visual': torch.zeros(75, 512),
+                'audio_len': 300,
+                'visual_len': 75,
                 'target': target,
                 'text': text,
                 'rel_path': rel_path

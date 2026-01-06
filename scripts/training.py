@@ -1,6 +1,6 @@
 """
-Local Training Script for AURORA-XT
-====================================
+Local Training Script for MOTA
+==============================
 Wrapper for local training - uses shared Trainer class
 """
 
@@ -18,7 +18,7 @@ from src.utils import load_config
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train AURORA-XT locally")
+    parser = argparse.ArgumentParser(description="Train MOTA locally")
     parser.add_argument('--config', type=str, default='configs/model/config.yaml',
                        help='Path to config file')
     parser.add_argument('--resume', type=str, default=None,
@@ -35,7 +35,7 @@ def main():
     config = load_config(args.config)
     
     print("\n" + "="*70)
-    print("🚀 AURORA-XT Training (Local)")
+    print("🚀 MOTA Training (Local)")
     print("="*70)
     print(f"\n📋 Config: {args.config}")
     print(f"   d_model: {config['model']['d_model']}")

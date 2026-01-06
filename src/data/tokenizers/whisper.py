@@ -8,8 +8,8 @@ logger = setup_logger(__name__)
 class WhisperTokenizer:
     def __init__(
         self,
-        language: str = "en",
-        model: str = "openai/whisper-tiny",
+        language: str = "vi",  # Vietnamese for ViCocktail
+        model: str = "openai/whisper-small",  # Use small for better Vietnamese support
         task: str = "transcribe",
     ):
         self.language = language
@@ -34,6 +34,10 @@ class WhisperTokenizer:
         logger.debug(f"   Vocab size: {self.vocab_size}")
         logger.debug(f"   Language: {language}")
         logger.debug(f"   Model: {model}")
+        
+        # Log token range for debugging
+        logger.debug(f"   Pad token ID: {self.pad_token_id}")
+        logger.debug(f"   Special token range: {self.sot_token_id} - {self.eot_token_id}")
 
     @property
     def vocab_size(self):
@@ -48,6 +52,29 @@ class WhisperTokenizer:
         return self.tokenizer.encode(
             text,
             add_special_tokens=add_special_tokens
+        )
+    
+    def encode_for_ctc(
+        self,
+        text: str,
+    ) -> List[int]:
+        """
+        Encode text for CTC loss (without special tokens)
+        
+        This is CRITICAL for CTC training because:
+        1. CTC should only see content tokens
+        2. Special tokens (<|startoftranscript|>, <|vi|>, etc.) confuse alignment
+        3. Cleaner targets = faster convergence
+        
+        Args:
+            text: Input text string
+            
+        Returns:
+            List of token IDs (content only, no special tokens)
+        """
+        return self.tokenizer.encode(
+            text,
+            add_special_tokens=False  # KEY: Remove special tokens for CTC
         )
 
     def decode(
