@@ -152,24 +152,25 @@ class FeatureDataset(BaseDataset):
             audio = data['audio'].float()
             visual = data['visual'].float()
             
-            # CRITICAL FIX: Compute actual lengths
-            # Visual: Can detect trailing zeros (works well)
-            visual_len = self._get_actual_length(visual)
-            
-            # Audio: Whisper encoder normalizes output, so no trailing zeros
-            # SOLUTION: Estimate audio_len from visual_len using frame rate ratio
-            # Typically: Audio ~50Hz (Whisper), Visual ~25fps → ratio ~2
-            # But since audio is already 1500 frames for ~10 sec and visual ~150 frames
-            # The ratio is closer to audio_total / visual_total
-            audio_total = audio.size(0)
-            visual_total = visual.size(0)
-            
-            if visual_total > 0 and visual_len > 0:
-                # Scale audio_len proportionally to visual_len
-                ratio = audio_total / visual_total
-                audio_len = min(int(visual_len * ratio), audio_total)
+            # CRITICAL: Get actual lengths for CTC
+            # Priority 1: Read from .pt file (if preprocessed with new code)
+            if 'audio_len' in data and 'visual_len' in data:
+                audio_len = data['audio_len']
+                visual_len = data['visual_len']
             else:
-                audio_len = audio_total
+                # Priority 2: Fallback - estimate from visual detection
+                # This is for old .pt files without lengths
+                visual_len = self._get_actual_length(visual)
+                
+                # Estimate audio_len from visual_len using frame rate ratio
+                audio_total = audio.size(0)
+                visual_total = visual.size(0)
+                
+                if visual_total > 0 and visual_len > 0:
+                    ratio = audio_total / visual_total
+                    audio_len = min(int(visual_len * ratio), audio_total)
+                else:
+                    audio_len = audio_total
             
             # Apply Augmentation if enabled
             if self.augmenter is not None:
@@ -178,8 +179,8 @@ class FeatureDataset(BaseDataset):
             return {
                 'audio': audio,   # [T_a, 768]
                 'visual': visual, # [T_v, 512]
-                'audio_len': audio_len,   # Estimated from visual
-                'visual_len': visual_len, # Detected from zeros
+                'audio_len': audio_len,   # From file or estimated
+                'visual_len': visual_len, # From file or detected
                 'target': target,
                 'text': text,
                 'rel_path': rel_path
