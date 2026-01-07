@@ -14,8 +14,8 @@ model:
 
 # Loss Configuration  
 loss:
-  ctc_weight: 0.7           # Increased from 0.3 to prioritize alignment learning
-  ce_weight: 0.3            # Decreased from 0.7
+  ctc_weight: 1.0           # 🔧 FIX: Prioritize alignment (CTC) to fix repetition
+  ce_weight: 0.2            # Reduce CE influence initially
   # blank_id is auto-set to vocab_size (51865) in losses.py
 
 # Data Configuration
@@ -24,7 +24,7 @@ data:
   val_manifest: "/mnt/processed/manifests/val.jsonl"     # Modal path
   test_manifest: "/mnt/processed/manifests/test.jsonl"   # Modal path
   data_root: "/mnt/processed/features/vicocktail"        # Path where .pt files are
-  batch_size: 16            # Reduced from 64 to fix CUDA OOM
+  batch_size: 8            # Reduced from 64 to fix CUDA OOM
   num_workers: 8
   
   max_train_samples: null

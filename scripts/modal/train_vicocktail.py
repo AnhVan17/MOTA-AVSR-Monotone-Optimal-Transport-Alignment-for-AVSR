@@ -5,7 +5,7 @@ import yaml
 from pathlib import Path
 
 # --- Config ---
-APP_NAME = "avsr-train-ALL-FIXES-v18"  # All fixes: CTC kickstart + audio_len + token check
+APP_NAME = "avsr-train-CTC-FOCUS-v3033"  # Fix: CTC weight 1.0, CE 0.1 to stop repetition
 # Processed Volume containing Features & Manifests
 VOLUME_PROCESSED = "avsr-vicocktail-processed" 
 

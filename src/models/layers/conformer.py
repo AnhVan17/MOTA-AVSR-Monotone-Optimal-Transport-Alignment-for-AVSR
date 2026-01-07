@@ -1,11 +1,13 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 
 class ConformerBlock(nn.Module):
     """
     Conformer block: Conv + Attention
     
-    Best for speech: captures acoustic (conv) + context (attention)
+    🔧 SIMPLE VERSION - No masking needed!
+    CTC loss handles lengths, model processes all frames.
     """
     
     def __init__(
@@ -36,14 +38,14 @@ class ConformerBlock(nn.Module):
         )
         self.dropout_mha = nn.Dropout(dropout)
         
-        # 3. Depthwise convolution (KEY!)
+        # 3. Depthwise convolution
         self.norm_conv = nn.LayerNorm(d_model)
         self.conv = nn.Sequential(
             nn.Conv1d(
                 d_model, d_model,
                 kernel_size=conv_kernel,
                 padding=conv_kernel // 2,
-                groups=d_model  # Depthwise
+                groups=d_model
             ),
             nn.GELU(),
             nn.Dropout(dropout)
@@ -59,24 +61,23 @@ class ConformerBlock(nn.Module):
             nn.Dropout(dropout)
         )
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Args:
             x: [B, T, D]
-        Returns:
-            x: [B, T, D]
+            mask: IGNORED - we process all frames!
         """
         # FFN 1
         x = x + 0.5 * self.ffn1(x)
         
-        # Multi-head attention
+        # Multi-head attention (no mask!)
         x_norm = self.norm_mha(x)
         attn_out, _ = self.mha(x_norm, x_norm, x_norm)
         x = x + self.dropout_mha(attn_out)
         
         # Convolution
         x_norm = self.norm_conv(x)
-        x_conv = x_norm.transpose(1, 2)  # [B, D, T]
+        x_conv = x_norm.transpose(1, 2)
         x_conv = self.conv(x_conv)
         x = x + x_conv.transpose(1, 2)
         
