@@ -5,8 +5,7 @@ import yaml
 from pathlib import Path
 
 # --- Config ---
-APP_NAME = "avsr-train-CTC-FOCUS-v3033"  # Fix: CTC weight 1.0, CE 0.1 to stop repetition
-# Processed Volume containing Features & Manifests
+APP_NAME = "avsr-train-CTC-FOCUS-v3033422"  
 VOLUME_PROCESSED = "avsr-vicocktail-processed" 
 
 # --- Image Definition (Robust Numpy Fix) ---
@@ -33,9 +32,13 @@ image = (
         "jiwer"  
     )
     .env({"PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:128"})
-    # Be sure to include src and configs
-    .add_local_dir("configs", remote_path="/root/configs")
-    .add_local_dir("src", remote_path="/root/src")
+    # Be sure to include src and configs (copy=True needed for build steps)
+    .add_local_dir("configs", remote_path="/root/configs", copy=True)
+    .add_local_dir("src", remote_path="/root/src", copy=True)
+    .add_local_dir("scripts", remote_path="/root/scripts", copy=True)
+    # 🔧 NEW: Generate Pruned Vocab INSIDE image
+    # Now this works because files are physically copied into the image layer
+    .run_commands("python /root/scripts/prune_whisper_vocab.py")
 )
 
 app = modal.App(APP_NAME)

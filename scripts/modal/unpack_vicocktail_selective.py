@@ -150,5 +150,5 @@ def unpack_selective(train_limit: int = 50, clean_first: bool = False):
     print(" Done!")
 
 @app.local_entrypoint()
-def main(train_limit: int = 10, clean_first: bool = False):
+def main(train_limit: int = 30, clean_first: bool = False):
     unpack_selective.remote(train_limit=train_limit, clean_first=clean_first)

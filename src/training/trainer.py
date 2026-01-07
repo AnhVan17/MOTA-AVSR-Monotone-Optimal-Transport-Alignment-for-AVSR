@@ -41,17 +41,15 @@ class Trainer:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
         
-        # Initialize tokenizer
-        print("📝 Initializing tokenizer...")
-        self.tokenizer = WhisperTokenizer()
+        # Initialize tokenizer (Pruned Mode)
+        print("📝 Initializing tokenizer (Pruned Mode)...")
+        # Try to use pruned vocab if available
+        self.tokenizer = WhisperTokenizer(use_pruned_vocab=True)
         
-        # <--- FIX: SỬA LỖI VOCAB SIZE TẠI ĐÂY --->
-        # Sử dụng len() để lấy kích thước thực bao gồm cả special tokens (timestamps, bos, eos...)
-        # Thay vì self.tokenizer.vocab_size (chỉ trả về kích thước base)
-        # FIX: Whisper uses special tokens (timestamps) > 50257. Max is usually 51865.
-        # We explicitly set a large enough vocab size to prevent Embedding crash.
-        self.config['model']['vocab_size'] = 51865
-        # <---------------------------------------->
+        # Update config with ACTUAL vocab size (e.g. 8000)
+        # 🔧 FIX: Set vocab_size dynamically based on tokenizer
+        self.config['model']['vocab_size'] = self.tokenizer.vocab_size
+        print(f"   Vocab Size set to: {self.config['model']['vocab_size']}")
         
         # Create model
         print("🏗️ Creating model...")
