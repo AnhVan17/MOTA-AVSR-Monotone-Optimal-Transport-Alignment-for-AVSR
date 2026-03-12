@@ -1,0 +1,59 @@
+# Base Configuration
+# Shared defaults for all training phases
+
+model:
+  # Architecture Defaults
+  audio_dim: 768            # Whisper encoder output
+  visual_dim: 512           # ResNet18 output
+  d_model: 256
+  num_encoder_layers: 4
+  num_decoder_layers: 2
+  num_heads: 4
+  vocab_size: 51865
+  blank_id: 50257           # EOT token for Whisper
+  dropout: 0.1
+  
+  # Flags
+  use_mqot: false           # Default: Disabled
+  use_backbones: false      # Default: Feature-based (Offline backbones)
+
+loss:
+  ctc_weight: 0.3
+  ce_weight: 0.7
+
+data:
+  # Default Paths (Override in specific configs if needed)
+  train_manifest: "/mnt/manifests/train_manifest.jsonl"
+  val_manifest: "/mnt/manifests/val_manifest.jsonl"
+  data_root: "/mnt/processed_features/grid"
+  
+  batch_size: 32
+  num_workers: 2
+  use_precomputed_features: true
+  max_samples: null
+
+training:
+  seed: 42
+  num_epochs: 20
+  learning_rate: 1e-4
+  min_lr: 1e-5          # Increased from 1e-6
+  warmup_steps: 100     # Decreased from 1000 for small dataset
+  weight_decay: 0.01
+  gradient_clip: 5.0
+  use_amp: true
+  pretrained_path: null     # Default: None
+
+augmentation:
+  # Audio
+  time_mask_param: 10
+  freq_mask_param: 64
+  noise_std: 0.01
+  prob: 0.0
+  # Visual
+  dropout_prob: 0.1
+  frame_mask_param: 5
+  visual_prob: 0.3
+
+logging:
+  use_wandb: false
+  checkpoint_dir: "/mnt/checkpoints"

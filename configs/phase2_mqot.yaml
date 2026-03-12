@@ -1,0 +1,27 @@
+# Phase 2 Configuration (Inherits from phase1_base.yaml)
+defaults:
+  - phase1_base
+
+model:
+  use_mqot: true
+  # E2E Readiness: set use_backbones: true if/when we switch to Raw Video
+
+mqot:
+  lambda_time: 0.5
+  lambda_qual: 5.0
+  epsilon: 0.15
+  n_iters: 20
+
+loss:
+  # Potential aux loss weights
+  quality_loss_weight: 0.1
+
+data:
+  batch_size: 24 # Reduced for OT Memory
+
+training:
+  learning_rate: 5e-5 # Fine-tuning LR
+  pretrained_path: "/mnt/checkpoints/phase1/best_model.pt"
+
+logging:
+  checkpoint_dir: "/mnt/checkpoints/phase2"

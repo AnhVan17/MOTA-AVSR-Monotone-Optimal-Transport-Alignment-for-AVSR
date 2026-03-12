@@ -12,7 +12,9 @@ env/
 pip-wheel-metadata/
 build/
 dist/
-
+verify_pipeline.py
+train_debug.yaml
+test_ctc_decode.py
 
 .ipynb_checkpoints/
 
@@ -45,3 +47,9 @@ volumes/
 Thumbs.db
 .vscode/
 .idea/
+
+
+# untrack folders
+notebooks/
+
+docs/
