@@ -6,8 +6,18 @@ from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 import threading
 
+# !!! DEPRECATED !!!
+# This script is a Monolithic Preprocessor that is known to cause EGL/GPU context conflicts
+# (MediaPipe crashing when initialized alongside PyTorch CUDA).
+#
+# PLEASE USE THE SPECIALIZED MICROSERVICES INSTEAD:
+# 1. scripts/modal/prep_facemesh_cpu.py  (CPU-only, stable FaceMesh)
+# 2. scripts/modal/prep_features_gpu.py  (GPU-only, Fast ResNet/Whisper)
+#
+# This file is kept only for reference / archival purposes.
+
 # --- Config ---
-APP_NAME = "avsr-preprocess-unified"
+APP_NAME = "avsr-preprocess-unified-DEPRECATED"
 VOLUME_NAME = "avsr-volume"
 
 # --- Image Definitions ---
@@ -58,7 +68,9 @@ extract_image = (
         "opencv-python-headless",
         "mediapipe==0.10.9",
         "numpy<2",  # Force again to prevent override
-        "av"        # PyAV for robust audio extraction
+        "av",        # PyAV for robust audio extraction
+        "jiwer",
+        "matplotlib"
     )
     .add_local_dir("src", remote_path="/root/src")
 )

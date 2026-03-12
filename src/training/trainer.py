@@ -1,261 +1,358 @@
-"""
-MOTA Training Module
-==========================
-Core training logic - shared by training.py và training_modal.py
-Uses absolute imports for Modal compatibility
-"""
-
 import torch
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from typing import Dict, Optional, List
 from pathlib import Path
-import yaml
 from tqdm import tqdm
-import logging
+import math
 
-# Absolute imports - works both local and Modal
-from src.data.tokenizers.whisper import WhisperTokenizer
-from src.data.loader import build_dataloader
+# Project Modules
+# Project Modules
 from src.models.mota import create_model
+from src.data.loader import build_dataloader
+from src.data.tokenizers.whisper import WhisperTokenizer  # Import Tokenizer
 from src.training.losses import create_loss
-from src.evaluation import Evaluator
+from src.evaluation.metrics import MetricCalculator
+from src.evaluation.decoding import CTCDecoder
 from src.utils.logging_utils import setup_logger
+from src.utils.common import (
+    AverageMeter, 
+    save_checkpoint, 
+    load_checkpoint, 
+    get_lr,
+    EarlyStopping
+)
 
+# Initialize Logger
 logger = setup_logger(__name__)
 
-
 class Trainer:
-    """Core Trainer class - dùng chung cho local và Modal"""
+    """
+    Unified Trainer for AURORA-XT (Phase 1 & 2)
     
-    def __init__(self, config: dict):
-        """
-        Args:
-            config: Dict config (không phải path)
-        """
+    Features:
+    - Metric-based Curriculum Learning (Adaptive Loss Weights)
+    - Adaptive Learning Rate (ReduceLROnPlateau)
+    - Robust Checkpointing (Flexible State Dict Loading)
+    - Defensive Programming (NaN/Inf Checks)
+    - E2E Backbone Support (Optional)
+    """
+    
+    def __init__(self, config: Dict):
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # Set seed
-        seed = config.get('seed', 42)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
-        
-        # Initialize tokenizer
-        logger.info("Initializing tokenizer...")
-        self.tokenizer = WhisperTokenizer()
-        self.config['model']['vocab_size'] = self.tokenizer.vocab_size
-        
-        # Create model
-        logger.info("Creating model...")
-        self.model = create_model(self.config['model']).to(self.device)
-        
-        total_params = sum(p.numel() for p in self.model.parameters())
-        logger.info(f"Total params: {total_params:,} (~{total_params*4/1024**2:.1f}MB)")
-        
-        # Create loss
-        self.criterion = create_loss(self.config)
-        
-        # Create optimizer
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=float(self.config['training']['learning_rate']),
-            weight_decay=float(self.config['training']['weight_decay'])
-        )
-        
-        # Create scheduler
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer,
-            T_max=self.config['training']['num_epochs'],
-            eta_min=float(self.config['training'].get('min_lr', 1e-6))
-        )
-        
-        # Mixed precision
-        self.use_amp = self.config['training'].get('use_amp', True)
-        self.scaler = GradScaler() if self.use_amp else None
-        
-        # Create dataloaders
-        logger.info("Loading data...")
-        self.dataloaders = {
-            'train': build_dataloader(self.config['data'], self.tokenizer, mode='train'),
-            'val': build_dataloader(self.config['data'], self.tokenizer, mode='val')
-        }
-        
-        logger.info(f"Train batches: {len(self.dataloaders['train'])}")
-        logger.info(f"Val batches: {len(self.dataloaders['val'])}")
-        
-        # Create evaluator
-        self.evaluator = Evaluator(self.tokenizer)
-        
-        # Training state
-        self.epoch = 0
-        self.step = 0
-        self.best_wer = float('inf')
-        
-        # Checkpoint dir
-        self.checkpoint_dir = Path(self.config.get('checkpoint_dir', './checkpoints'))
+        # Setup Checkpoint Directory
+        self.checkpoint_dir = Path(config['logging']['checkpoint_dir'])
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
-        logger.info("Trainer initialized")
-    
-    def train_epoch(self):
-        """Train one epoch"""
-        self.model.train()
+        logger.info(f"Initializing Trainer on {self.device}")
         
-        # Metrics
-        total_loss = 0.0
-        total_ctc = 0.0
-        total_ce = 0.0
+        # 1. Initialize Tokenizer (Required for Dataloader)
+        logger.info("Initializing Tokenizer...")
+        self.tokenizer = WhisperTokenizer(model="openai/whisper-small", language="vi")
         
-        pbar = tqdm(
-            self.dataloaders['train'],
-            desc=f"Epoch {self.epoch+1}/{self.config['training']['num_epochs']}"
+        # 2. Data Loaders
+        # Support separate train/val manifests if available in config
+        logger.info("Building DataLoaders...")
+        self.train_loader = build_dataloader(config, tokenizer=self.tokenizer, mode='train')
+        self.val_loader = build_dataloader(config, tokenizer=self.tokenizer, mode='val')
+        
+        # 3. Model Initialization
+        logger.info("Creating Model...")
+        self.model = create_model(config['model']).to(self.device)
+        logger.info(f"Model Params: {sum(p.numel() for p in self.model.parameters()):,}")
+        
+        # 3. Optimization Setup
+        self.optimizer = optim.AdamW(
+            self.model.parameters(),
+            lr=float(config['training']['learning_rate']),
+            weight_decay=float(config['training'].get('weight_decay', 0.01))
         )
         
-        for batch in pbar:
-            # Move to device
-            audio = batch['audio'].to(self.device)
-            visual = batch['visual'].to(self.device)
-            target = batch['target'].to(self.device)
-            target_mask = batch['target_mask'].to(self.device)
+        # Adaptive Learning Rate Scheduler (Resume + Warmup logic handled by ReduceLROnPlateau mainly)
+        # Using 'min' mode because we want to minimize WER/Loss
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer,
+            mode='min',
+            factor=0.5,
+            patience=3,
+            min_lr=float(config['training'].get('min_lr', 1e-6))
+        )
+        
+        # 4. Loss Function & Metrics
+        self.criterion = create_loss(config).to(self.device)
+        self.early_stopping = EarlyStopping(
+            patience=config['training'].get('patience', 10), 
+            mode='min'
+        )
+        
+        # Mixed Precision
+        self.use_amp = config['training'].get('use_amp', False)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        
+        # Training State
+        self.start_epoch = 0
+        self.step = 0
+        self.best_metric = float('inf') # Using WER as primary metric
+        
+        # Load Pretrained / Resume
+        # Load Pretrained / Resume
+        if config['training'].get('pretrained_path'):
+            self._load_checkpoint(config['training']['pretrained_path'])
             
-            # Forward with mixed precision
-            with autocast(enabled=self.use_amp):
-                outputs = self.model(audio, visual, target)
+        # 5. Validation Tools (Phase 0.8.3)
+        self.metric_calc = MetricCalculator()
+        self.tokenizer = self.train_loader.dataset.tokenizer # Get tokenizer from dataset
+        blank_id = config['model'].get('blank_id', 50257)
+        self.decoder = CTCDecoder(self.tokenizer, blank_id=blank_id)
+
+    def _load_checkpoint(self, path: str):
+        """
+        Robust checkpoint loading.
+        Handles:
+        1. Dimension mismatches (Phase 1 -> Phase 2)
+        2. Missing keys (Feature -> E2E variables)
+        """
+        logger.info(f"Loading checkpoint from {path}...")
+        try:
+            checkpoint = torch.load(path, map_location=self.device)
+            
+            # Load state dict with strict=False to allow architecture changes
+            missing, unexpected = self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+            
+            if missing:
+                logger.warning(f"Missing keys: {len(missing)} (Normal for P1->P2 or Feature->E2E transtion)")
+            if unexpected:
+                logger.warning(f"Unexpected keys: {len(unexpected)}")
                 
+            logger.info("Checkpoint loaded successfully (flexible mode).")
+            
+        except Exception as e:
+            logger.error(f"Failed to load checkpoint: {e}")
+            # Decision: Don't crash, just start fresh if load fails? 
+            # Better to Crash explicitely if path was provided but invalid.
+            raise e
+
+    def train(self):
+        """Main Training Loop"""
+        num_epochs = self.config['training']['num_epochs']
+        logger.info(f"Starting Training for {num_epochs} epochs")
+        
+        for epoch in range(self.start_epoch, num_epochs):
+            # 1. Train One Epoch
+            train_metrics = self.train_epoch(epoch)
+            
+            # 2. Validate
+            val_metrics = self.validate_epoch(epoch)
+            
+            # 3. Update Learning Rate (Adaptive)
+            # Use Validation WER as the primary metric for scheduler
+            current_metric = val_metrics.get('wer', val_metrics['loss'])
+            self.scheduler.step(current_metric)
+            
+            # 4. Save Checkpoint
+            is_best = current_metric < self.best_metric
+            if is_best:
+                self.best_metric = current_metric
+                
+            # Save latest
+            save_checkpoint(
+                self.model, self.optimizer, self.scheduler,
+                epoch, self.step, self.best_metric,
+                str(self.checkpoint_dir),
+                filename=f"epoch_{epoch}.pt"
+            )
+            
+            # Save best
+            if is_best:
+                save_checkpoint(
+                    self.model, self.optimizer, self.scheduler,
+                    epoch, self.step, self.best_metric,
+                    str(self.checkpoint_dir),
+                    filename="best_model.pt"
+                )
+            
+            # 5. Logging
+            logger.info(
+                f"Epoch {epoch+1}/{num_epochs} | "
+                f"Train Loss: {train_metrics['loss']:.4f} | "
+                f"Val Loss: {val_metrics['loss']:.4f} | "
+                f"Val WER: {val_metrics.get('wer', 0):.2f}% | "
+                f"LR: {get_lr(self.optimizer):.2e}"
+            )
+            
+            # 6. Early Stopping
+            if self.early_stopping(current_metric, epoch):
+                logger.info("Early stopping triggered. Training finished.")
+                break
+
+    def train_epoch(self, epoch: int) -> Dict[str, float]:
+        self.model.train()
+        meter = AverageMeter()
+        
+        
+        # Training Configs
+        accum_steps = self.config['training'].get('accum_steps', 1)
+        warmup_steps = self.config['training'].get('warmup_steps', 1000)
+        base_lr = float(self.config['training']['learning_rate'])
+        
+        # 0.9.5 Fix: Ensure gradients are zeroed before loop starts
+        self.optimizer.zero_grad()
+        
+        pbar = tqdm(self.train_loader, desc=f"Train E{epoch}")
+        for batch_idx, batch in enumerate(pbar):
+            self.step += 1
+            
+            # --- Warmup Logic (Fix 0.9.2) ---
+            # Linear Warmup: LR = Base * (Step / Warmup)
+            # Only applies if step < warmup AND we are in early phase
+            # But simple check is global step
+            # We need global_step tracking across epochs. self.step is global?
+            # self.step += 1 is accumulated. Yes.
+            if self.step <= warmup_steps:
+                 warmup_factor = self.step / float(warmup_steps)
+                 current_lr = base_lr * warmup_factor
+                 for param_group in self.optimizer.param_groups:
+                     param_group['lr'] = current_lr
+            
+            # Move data to device
+            # Ensure collate_fn produces this structure
+            audio = batch['audio'].to(self.device)
+            visual = batch['visual'].to(self.device) 
+            targets = batch['target'].to(self.device)
+            target_mask = batch.get('target_mask', None)
+            if target_mask is not None:
+                target_mask = target_mask.to(self.device)
+            
+            if target_mask is not None:
+                target_mask = target_mask.to(self.device)
+            
+            # Zero Gradients handled at step boundary now (Moved to after step in 0.9.5)
+            # if (batch_idx % accum_steps) == 0:
+            #      self.optimizer.zero_grad()
+            
+            # Forward & Loss (with Mixed Precision)
+            with torch.cuda.amp.autocast(enabled=self.use_amp):
+                # E2E Support: forward() handles raw/features internally
+                outputs = self.model(audio, visual, targets)
+                
+                # Compute Loss
+                # Pass epoch for Curriculum Learning (if used inside Loss)
                 loss_dict = self.criterion(
                     ctc_logits=outputs['ctc_logits'],
                     ar_logits=outputs['ar_logits'],
-                    targets=target,
-                    target_mask=target_mask,
-                    epoch=self.epoch,
+                    targets=targets,
+                    target_mask=target_mask, # Required for CTC
+                    epoch=epoch,
                     max_epochs=self.config['training']['num_epochs']
                 )
-                
                 loss = loss_dict['total_loss']
+                
+                # Normalize loss for accumulation (Fix 0.9.2)
+                loss = loss / accum_steps
             
-            # Backward
-            self.optimizer.zero_grad()
+            # Strict Defensive Check: NaN/Inf
+            if not torch.isfinite(loss):
+                logger.critical(f"Loss Diverged (NaN/Inf) at step {self.step}: {loss.item()}")
+                # Dump batch for debugging
+                dump_path = self.checkpoint_dir / "nan_batch_dump.pt"
+                torch.save(batch, dump_path)
+                logger.critical(f"Failing batch dumped to {dump_path}")
+                raise ValueError(f"Loss Diverged at step {self.step}")
             
-            if self.use_amp:
-                self.scaler.scale(loss).backward()
+            # Backward Pass
+            self.scaler.scale(loss).backward()
+            
+            # Optimizer Step (Accumulated)
+            if (batch_idx + 1) % accum_steps == 0 or (batch_idx + 1) == len(self.train_loader):
+                # Gradient Clipping
                 self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config['training']['gradient_clip']
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), 
+                    self.config['training'].get('gradient_clip', 5.0)
                 )
+                
+                # Optimizer Step
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-            else:
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.config['training']['gradient_clip']
-                )
-                self.optimizer.step()
+                
+                # Zero Gradients (0.9.5 Fix: Clear after update)
+                self.optimizer.zero_grad()
             
-            # Update metrics
-            total_loss += loss_dict['total_loss'].item()
-            total_ctc += loss_dict['ctc_loss'].item()
-            total_ce += loss_dict['ce_loss'].item()
+            # Update Metrics (Scale back up for logging)
+            loss_val = loss.item() * accum_steps
+            meter.update(loss_val)
             
-            # Update progress bar
-            pbar.set_postfix({
-                'loss': f"{loss_dict['total_loss'].item():.4f}",
-                'ctc': f"{loss_dict['ctc_loss'].item():.4f}",
-                'ce': f"{loss_dict['ce_loss'].item():.4f}",
-                'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}"
-            })
+            # Log Norm (0.9.5)
+            postfix = {'loss': f"{meter.avg:.4f}", 'lr': f"{get_lr(self.optimizer):.2e}"}
+            if 'grad_norm' in locals():
+                 postfix['norm'] = f"{grad_norm:.2f}"
+            pbar.set_postfix(postfix)
             
-            self.step += 1
-        
-        # Scheduler step
-        self.scheduler.step()
-        
-        # Epoch averages
-        n = len(self.dataloaders['train'])
+        return {'loss': meter.avg}
+
         return {
-            'loss': total_loss / n,
-            'ctc_loss': total_ctc / n,
-            'ce_loss': total_ce / n
+            'loss': loss_meter.avg,
+            'wer': wer_meter.avg,
+            'cer': cer_meter.avg
         }
-    
-    @torch.no_grad()
-    def validate(self):
-        """Validate model"""
+
+    def validate_epoch(self, epoch: int) -> Dict[str, float]:
         self.model.eval()
+        loss_meter = AverageMeter()
+        wer_meter = AverageMeter()
+        cer_meter = AverageMeter()
         
-        # Evaluate
-        results = self.evaluator.evaluate(
-            self.model,
-            self.dataloaders['val'],
-            self.device,
-            max_batches=self.config.get('max_eval_batches', 20)
-        )
+        logged_samples = False # Flag to log only first batch
         
-        logger.info("Validation Results:")
-        logger.info(f"   WER: {results['wer']:.2f}%")
-        logger.info(f"   CER: {results['cer']:.2f}%")
-        
-        if results.get('samples'):
-            logger.info("Samples:")
-            for i, (pred, ref) in enumerate(results['samples'][:2]):
-                logger.info(f"   [{i}] Pred: {pred}")
-                logger.info(f"       Ref:  {ref}")
-        
-        return results
-    
-    def save_checkpoint(self, filename: str):
-        """Save checkpoint"""
-        checkpoint_path = self.checkpoint_dir / filename
-        
-        torch.save({
-            'epoch': self.epoch,
-            'step': self.step,
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'scheduler_state_dict': self.scheduler.state_dict(),
-            'best_wer': self.best_wer,
-            'config': self.config
-        }, checkpoint_path)
-        
-        logger.info(f"Saved checkpoint: {checkpoint_path}")
-    
-    def train(self):
-        """Main training loop"""
-        logger.info("="*70)
-        logger.info("Starting Training")
-        logger.info("="*70)
-        
-        for epoch in range(self.config['training']['num_epochs']):
-            self.epoch = epoch
-            
-            # Train epoch
-            train_metrics = self.train_epoch()
-            
-            logger.info(f"Epoch {epoch+1} Completed:")
-            logger.info(f"   Loss: {train_metrics['loss']:.4f}")
-            logger.info(f"   CTC: {train_metrics['ctc_loss']:.4f}")
-            logger.info(f"   CE: {train_metrics['ce_loss']:.4f}")
-            
-            # Validate
-            val_metrics = self.validate()
-            
-            # Save best model
-            if val_metrics['wer'] < self.best_wer:
-                self.best_wer = val_metrics['wer']
-                self.save_checkpoint('best_model.pt')
-                logger.info(f"   New best WER: {self.best_wer:.2f}%")
-            
-            # Periodic save
-            if (epoch + 1) % 5 == 0:
-                self.save_checkpoint(f'checkpoint_epoch_{epoch+1}.pt')
-        
-        # Final save
-        self.save_checkpoint('final_model.pt')
-        
-        logger.info("="*70)
-        logger.info(f"Training Complete! Best WER: {self.best_wer:.2f}%")
-        logger.info("="*70)
-        
-        return {'best_wer': self.best_wer, 'steps': self.step}
+        with torch.no_grad():
+            for batch in tqdm(self.val_loader, desc=f"Val E{epoch}"):
+                audio = batch['audio'].to(self.device)
+                visual = batch['visual'].to(self.device)
+                targets = batch['target'].to(self.device)
+                target_mask = batch.get('target_mask', None)
+                if target_mask is not None:
+                    target_mask = target_mask.to(self.device)
+                
+                # Single Forward Pass (Optimization 0.8.3)
+                outputs = self.model(audio, visual, targets)
+                
+                # 1. Loss Calculation
+                loss_dict = self.criterion(
+                    outputs['ctc_logits'],
+                    outputs['ar_logits'],
+                    targets,
+                    target_mask,
+                    epoch=epoch,
+                    max_epochs=self.config['training']['num_epochs']
+                )
+                loss_meter.update(loss_dict['total_loss'].item())
+                
+                # 2. Real WER/CER Calculation
+                # Use CTC Logits for Greedy/Beam decoding
+                decoded_text = self.decoder.decode_batch(outputs['ctc_logits'], method='greedy')
+                target_text = self.decoder.decode_targets(targets)
+                
+                # Log samples for first batch
+                if not logged_samples:
+                    logger.info(f"--- Epoch {epoch} Validation Samples ---")
+                    for i in range(min(3, len(target_text))):
+                        logger.info(f"Ref:  {target_text[i]}")
+                        logger.info(f"Pred: {decoded_text[i]}")
+                    logger.info("----------------------------------------")
+                    logged_samples = True
+                
+                # Calculate Metrics
+                wer = self.metric_calc.compute_wer(target_text, decoded_text)
+                cer = self.metric_calc.compute_cer(target_text, decoded_text)
+                
+                wer_meter.update(wer)
+                cer_meter.update(cer)
+                
+        return {
+            'loss': loss_meter.avg,
+            'wer': wer_meter.avg,
+            'cer': cer_meter.avg
+        }

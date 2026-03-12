@@ -205,10 +205,10 @@ def inspect_volume(
     logger.info("-" * 40)
     
     expected_paths = [
-        "/mnt/data/grid",
-        "/mnt/data/grid_cropped",
-        "/mnt/data/processed_features/grid",
-        "/mnt/data/manifests"
+        "/mnt/vicocktail_raw",
+        "/mnt/vicocktail_cropped",
+        "/mnt/vicocktail_features",
+        "/mnt/_legacy_archive"
     ]
     
     for p in expected_paths:
@@ -224,7 +224,7 @@ def inspect_volume(
 
 @app.local_entrypoint()
 def main(
-    path: str = "/mnt/data",
+    path: str = "/mnt/vicocktail_features",
     detailed: bool = False,
     sample_pt: bool = False,
     max_depth: int = 3

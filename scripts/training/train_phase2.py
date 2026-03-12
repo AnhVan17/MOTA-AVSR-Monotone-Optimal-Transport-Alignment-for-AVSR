@@ -23,7 +23,11 @@ image = (
     .pip_install(
         "transformers==4.36.2",
         "tqdm==4.66.1",
-        "numpy<2" 
+        "numpy<2",
+        "jiwer",
+        "matplotlib",
+        "soundfile",
+        "opencv-python-headless"
     )
     .add_local_dir("configs", remote_path="/root/configs")
     .add_local_dir("src", remote_path="/root/src")
@@ -44,6 +48,7 @@ def train_remote():
     import yaml
     from src.training.trainer import Trainer
     from src.utils.logging_utils import setup_logger
+    from src.utils.config_utils import load_config
 
     logger = setup_logger("Train:Phase2")
     logger.info("Starting Phase 2: MQOT Integration Training")
@@ -59,8 +64,8 @@ def train_remote():
          return
 
     logger.info(f"Loading config from {config_path}")
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+    # Load with inheritance
+    config = load_config(config_path)
     
     # Initialize Trainer
     # Trainer handles the complexities of creating the MQOT-enabled model

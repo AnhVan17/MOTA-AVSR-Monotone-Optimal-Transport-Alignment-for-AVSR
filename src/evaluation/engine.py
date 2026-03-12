@@ -18,16 +18,25 @@ class Evaluator:
         self.calculator = MetricCalculator()
         self.visualizer = Visualizer()
         
-    @torch.no_grad()
     def evaluate(
         self,
         model: torch.nn.Module,
         dataloader: torch.utils.data.DataLoader,
         max_batches: Optional[int] = None,
-        return_samples: bool = True
+        return_samples: bool = True,
+        decode_method: str = 'greedy',
+        beam_width: int = 5
     ) -> Dict:
         """
         Run full evaluation on a dataset.
+        
+        Args:
+            model: Model to evaluate
+            dataloader: Validation/Test loader
+            max_batches: Limit batches for speed
+            return_samples: Whether to return text samples
+            decode_method: 'greedy' or 'beam'
+            beam_width: Beam width for beam search
         """
         model.eval()
         model.to(self.device)
@@ -35,7 +44,7 @@ class Evaluator:
         all_preds = []
         all_refs = []
         
-        pbar = tqdm(dataloader, desc="Evaluating")
+        pbar = tqdm(dataloader, desc=f"Evaluating ({decode_method})")
         for i, batch in enumerate(pbar):
             if max_batches and i >= max_batches:
                 break
@@ -48,7 +57,11 @@ class Evaluator:
             outputs = model(audio, visual, target=None)
             
             # Decode
-            preds = self.decoder.greedy_decode(outputs['ctc_logits'])
+            if decode_method == 'beam':
+                preds = self.decoder.beam_search_decode(outputs['ctc_logits'], beam_width=beam_width)
+            else:
+                preds = self.decoder.greedy_decode(outputs['ctc_logits'])
+                
             refs = self.decoder.decode_targets(target)
             
             all_preds.extend(preds)

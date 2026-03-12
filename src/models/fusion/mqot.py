@@ -86,12 +86,19 @@ class MQOTLayer(nn.Module):
         v = torch.zeros_like(K[:, 0, :])  # [B, Tv]
         
         # Sinkhorn iterations
-        for _ in range(self.n_iters):
+        for i in range(self.n_iters):
+            u_prev = u.clone()
+            
             # Update u
             u = -torch.logsumexp(K + v.unsqueeze(1), dim=2)
             
             # Update v
             v = -torch.logsumexp(K + u.unsqueeze(2), dim=1)
+            
+            # Check convergence
+            err = torch.max(torch.abs(u - u_prev))
+            if err < 1e-3:
+                break
         
         # Compute transport plan
         transport = torch.exp(K + u.unsqueeze(2) + v.unsqueeze(1))
@@ -196,12 +203,12 @@ class GuidedAttention(nn.Module):
         B, Ta, D = q.shape
         Tv = k.shape[1]
         
-        # Repeat guide map for multi-head attention
-        # [B, Ta, Tv] → [B*H, Ta, Tv]
-        guide_repeated = guide_map.repeat_interleave(self.num_heads, dim=0)
+        # Optimize (Fix 0.9.3): Log first, then expand (Avoids huge log computation and extra copy)
+        # 1. Compute Base Bias [B, Ta, Tv]
+        base_bias = torch.log(guide_map + 1e-8) * self.scale
         
-        # Convert to log-space bias (avoid numerical issues)
-        attn_bias = torch.log(guide_repeated + 1e-8) * self.scale
+        # 2. Expand and Reshape [B, Ta, Tv] -> [B, H, Ta, Tv] -> [B*H, Ta, Tv]
+        attn_bias = base_bias.unsqueeze(1).expand(-1, self.num_heads, -1, -1).reshape(B * self.num_heads, Ta, Tv)
         
         # Cross-attention with bias
         context, _ = self.attn(

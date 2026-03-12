@@ -36,9 +36,13 @@ class PreprocessConfig:
     AUDIO_SAMPLE_RATE = 16000
     AUDIO_LENGTH = 240000 # 15s * 16000
     
+    # Video Params
+    FPS = 25
+    VIDEO_FRAMES = 375 # 15s * 25fps
+    
     # System Params
-    BATCH_SIZE = 256       # Increased for A100 (40-80GB VRAM)
-    NUM_WORKERS = 8 # Increase workers for parallel FaceMesh processing
+    BATCH_SIZE = 4096      # Aggressively increased for A100
+    NUM_WORKERS = 2        # Safe to use multiprocessing when use_precropped=True
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 # --- 1. VIDEO PROCESSOR (Mouth Crop) ---
@@ -51,13 +55,25 @@ class VideoProcessor:
         self.use_precropped = use_precropped
         
         if not self.use_precropped:
-            self.face_mesh = mp.solutions.face_mesh.FaceMesh(
-                static_image_mode=False,
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.3,
-                min_tracking_confidence=0.3
-            )
+            # CRITICAL FIX: Hide GPU from MediaPipe to prevent EGL Context conflicts
+            # In headless environments, MediaPipe's attempt to use GPU/EGL often crashes
+            # when co-existing with PyTorch CUDA. forcing CPU for FaceMesh is safe and stable.
+            original_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
+            try:
+                os.environ["CUDA_VISIBLE_DEVICES"] = "" # Hide GPU
+                self.face_mesh = mp.solutions.face_mesh.FaceMesh(
+                    static_image_mode=False,
+                    max_num_faces=1,
+                    refine_landmarks=True,
+                    min_detection_confidence=0.3,
+                    min_tracking_confidence=0.3
+                )
+            finally:
+                # Restore GPU visibility for PyTorch
+                if original_cuda_visible is not None:
+                    os.environ["CUDA_VISIBLE_DEVICES"] = original_cuda_visible
+                else:
+                    del os.environ["CUDA_VISIBLE_DEVICES"]
 
     def process(self, video_path):
         cap = cv2.VideoCapture(video_path)
@@ -104,13 +120,11 @@ class VideoProcessor:
             video_tensor = torch.tensor(frames_np, dtype=torch.float32).unsqueeze(1) / 255.0
         else:
             # RGB: (T, H, W, C) -> (T, C, H, W)
+            # Standard for ResNet/3D CNNs
             video_tensor = torch.tensor(frames_np, dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
             
-        # LOOP PADDING if video is short (better than zero-padding for learning)
-        # Assuming we might want a fixed length or at least handle very short clips
-        # For now, let's just expose the loop pad method but maybe not force it 
-        # unless MAX_FRAMES is defined. The current logic in PreprocessConfig 
-        # doesn't strictly enforce MAX_FRAMES for visual yet, but let's add the method.
+        # Enforce Temporal Alignment (Loop Padding to 15s)
+        video_tensor = self._loop_pad_video(video_tensor, PreprocessConfig.VIDEO_FRAMES)
         
         return video_tensor
 
@@ -188,7 +202,8 @@ class VideoProcessor:
                 
                 bbox = (x1, y1, x2, y2)
                 return frame[y1:y2, x1:x2], bbox
-        except:
+        except Exception as e:
+            logger.warning(f"FaceMesh failed for frame (fallback to center crop): {e}")
             pass
             
         # Fallback: Crop center
@@ -226,7 +241,8 @@ class AudioFeatureExtractor:
             waveform = self._try_pyav(video_path)
             if waveform is not None:
                 return waveform
-        except Exception:
+        except Exception as e:
+            logger.warning(f"PyAV extraction failed for {video_path} (trying FFmpeg): {e}")
             pass
             
         # 2. Fallback to FFmpeg (subprocess)
@@ -292,7 +308,7 @@ class AudioFeatureExtractor:
             
             return self._normalize_pad(waveform.unsqueeze(0))
         except ImportError:
-            # logger.warning("PyAV not installed")
+            logger.warning("PyAV not installed (pip install av)")
             return None
         except Exception:
             return None
@@ -378,13 +394,22 @@ class RawVideoDataset(Dataset):
         self.video_paths = video_paths
         self.use_precropped = use_precropped
         
+        # Optimization: If running in main process (NUM_WORKERS=0), 
+        # instantiate processor ONCE to reuse MediaPipe graph.
+        # This prevents EGL context creation/destruction spam.
+        self.processor = None
+        if PreprocessConfig.NUM_WORKERS == 0:
+            logger.info("Initializing persistent VideoProcessor (Single Process Mode)")
+            self.processor = VideoProcessor(use_precropped=self.use_precropped)
+        
     def __len__(self): return len(self.video_paths)
 
     def __getitem__(self, idx):
         path = self.video_paths[idx]
         
-        # Init processor locally to avoid Multiprocessing issues
-        processor = VideoProcessor(use_precropped=self.use_precropped) 
+        # Use persistent processor if available, else init local (for multiproc compatibility)
+        processor = self.processor if self.processor else VideoProcessor(use_precropped=self.use_precropped)
+        
         tensor = processor.process(path)
         
         if tensor is None: 
@@ -563,14 +588,17 @@ class BasePreprocessor(ABC):
 
         # 1. Extract Features
         if extract_features:
-            # LOAD MODELS NOW
-            self._load_models()
-            
             logger.info("Running Multimodal Extraction (Audio + Visual)...")
             video_paths = [m['full_path'] for m in metadata]
             
             # Use DataLoader for Visual (Frames are heavy, supports Batching)
+            # CRITICAL: Init Dataset (FaceMesh) BEFORE loading PyTorch Models to CUDA
+            # This prevents MediaPipe EGL context from conflicting with PyTorch CUDA context
             dataset = RawVideoDataset(video_paths, use_precropped=self.use_precropped)
+            
+            # LOAD MODELS NOW
+            self._load_models()
+            
             loader = DataLoader(
                 dataset, 
                 batch_size=1, 

@@ -1,4 +1,3 @@
-import yaml
 import torch
 import random
 import numpy as np
@@ -7,14 +6,6 @@ from typing import Dict, Any
 from src.utils.logging_utils import setup_logger
 
 logger = setup_logger(__name__)
-
-
-def load_config(config_path: str) -> Dict[str, Any]:
-    """Load YAML config file"""
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    return config
-
 
 def set_seed(seed: int):
     """Set random seed for reproducibility"""
@@ -50,8 +41,17 @@ def save_checkpoint(
     }
     
     torch.save(checkpoint, checkpoint_dir / filename)
-    torch.save(checkpoint, checkpoint_dir / filename)
     logger.info(f"💾 Checkpoint saved: {checkpoint_dir / filename}")
+    
+    # Cleanup (Fix 0.9.2): Keep only last 5 epochs
+    checkpoints = sorted(checkpoint_dir.glob("epoch_*.pt"), key=lambda p: int(p.stem.split('_')[1]))
+    if len(checkpoints) > 5:
+        for old_ckpt in checkpoints[:-5]:
+            try:
+                old_ckpt.unlink()
+                logger.info(f"Deleted old checkpoint: {old_ckpt.name}")
+            except OSError as e:
+                logger.warning(f"Failed to delete {old_ckpt.name}: {e}")
 
 
 def load_checkpoint(
