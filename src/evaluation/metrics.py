@@ -1,30 +1,74 @@
 """
 Evaluation Metrics for AVSR
 ============================
-🔧 FIXED: Use full logits sequence, not truncated by actual_len
-
-The issue was that we were only evaluating the first `actual_len` frames,
-which caused the model to only learn from that portion and ignore the rest.
+🔧 FIXED: Added Vietnamese text filter to clean output
 """
 
 import torch
+import re
 from typing import List, Optional
 from jiwer import wer, cer
+
+
+def filter_vietnamese_text(text: str) -> str:
+    """
+    Filter text to keep ONLY Vietnamese characters
+    
+    This is a POST-PROCESSING step to remove any non-Vietnamese
+    characters that slip through vocab pruning.
+    """
+    # Vietnamese character pattern
+    # Includes: Latin letters + Vietnamese diacritics + basic punctuation
+    vietnamese_pattern = re.compile(
+        r'[a-zA-Z0-9\sàáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđĐ'
+        r'.,!?;:\-\'"()]+',
+        re.UNICODE
+    )
+    
+    # Find all Vietnamese matches
+    matches = vietnamese_pattern.findall(text)
+    
+    # Join matches
+    result = ' '.join(matches)
+    
+    # Clean up multiple spaces
+    result = re.sub(r'\s+', ' ', result).strip()
+    
+    return result
+
+
+def is_mostly_garbage(text: str, threshold: float = 0.5) -> bool:
+    """
+    Check if text is mostly garbage (non-Vietnamese)
+    
+    Returns True if more than threshold% of characters are non-Vietnamese
+    """
+    if not text:
+        return True
+    
+    # Count Vietnamese characters
+    vietnamese_chars = set(
+        'aàáảãạăắằẳẵặâấầẩẫậbcdđeèéẻẽẹêếềểễệghiìíỉĩịklmnoòóỏõọôốồổỗộơớờởỡợpqrstuùúủũụưứừửữựvxyỳýỷỹỵ'
+        'AÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬBCDĐEÈÉẺẼẸÊẾỀỂỄỆGHIÌÍỈĨỊKLMNOÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢPQRSTUÙÚỦŨỤƯỨỪỬỮỰVXYỲÝỶỸỴ'
+        '0123456789 .,!?;:\-\'"()'
+    )
+    
+    viet_count = sum(1 for c in text if c in vietnamese_chars)
+    total_count = len(text)
+    
+    ratio = viet_count / total_count if total_count > 0 else 0
+    
+    return ratio < threshold
 
 
 class Evaluator:
     """
     Evaluator for AVSR model
     
-    🔧 FIXED: Evaluate on FULL sequence, not truncated
+    🔧 FIXED: Added Vietnamese text filter
     """
     
     def __init__(self, tokenizer, blank_id: int = 51865):
-        """
-        Args:
-            tokenizer: Tokenizer instance
-            blank_id: CTC blank token ID
-        """
         self.tokenizer = tokenizer
         self.blank_id = blank_id
         print(f"[Evaluator] Initialized with blank_id={blank_id}")
@@ -34,20 +78,10 @@ class Evaluator:
         logits: torch.Tensor,
         blank_id: int = None
     ) -> List[List[int]]:
-        """
-        CTC greedy decoding - use FULL sequence
-        
-        Args:
-            logits: [B, T, V+1]
-            blank_id: Blank token ID
-            
-        Returns:
-            List of decoded token sequences
-        """
+        """CTC greedy decoding"""
         if blank_id is None:
             blank_id = self.blank_id
 
-        # Argmax over FULL sequence
         pred_ids = logits.argmax(dim=-1)  # [B, T]
         
         decoded = []
@@ -70,77 +104,54 @@ class Evaluator:
     def decode_predictions(
         self, 
         logits: torch.Tensor,
-        audio_lengths: Optional[torch.Tensor] = None,  # ← Not used anymore
+        audio_lengths: Optional[torch.Tensor] = None,
         debug: bool = False
     ) -> List[str]:
         """
-        🔧 FIXED: Decode predictions from FULL logits, not truncated
-        
-        Args:
-            logits: [B, T, V+1]
-            audio_lengths: Not used (kept for compatibility)
-            debug: If True, print analysis
-            
-        Returns:
-            List of decoded text strings
+        Decode predictions with Vietnamese text filtering
         """
         B, T, V = logits.shape
         
-        # Get CTC decoded token IDs from FULL sequence
         pred_ids = self.ctc_greedy_decode(logits)
         
-        # 🔧 Enhanced debugging
         if debug and B > 0:
             print("\n" + "="*80)
             print("🔍 [PREDICTION DEBUG]")
             print("="*80)
             print(f"   Logits shape: {logits.shape}")
-            print(f"   Using FULL sequence length: {T}")
             
-            # Analyze first sample (FULL sequence)
-            sample_logits = logits[0]  # [T, V+1]
-            raw_preds = sample_logits.argmax(dim=-1)  # [T]
+            sample_logits = logits[0]
+            raw_preds = sample_logits.argmax(dim=-1)
             
             print(f"   Raw predictions (first 30): {raw_preds[:30].tolist()}")
             print(f"   After CTC decode: {pred_ids[0][:30] if len(pred_ids[0]) > 0 else []}")
             print(f"   Total non-blank tokens: {len(pred_ids[0])}")
             
-            # Analyze blank vs non-blank (FULL sequence)
             blank_count = (raw_preds == self.blank_id).sum().item()
             print(f"   Blank tokens: {blank_count}/{T} ({100*blank_count/T:.1f}%)")
             
-            # Analyze probabilities (FULL sequence)
             probs = torch.softmax(sample_logits, dim=-1)
             blank_prob = probs[:, self.blank_id].mean().item()
-            nonblank_probs = probs[:, :self.blank_id]
-            max_nonblank_prob = nonblank_probs.max(dim=-1)[0].mean().item()
-            
-            print(f"\n   📊 Probability Analysis (full sequence):")
-            print(f"      Mean blank probability: {blank_prob*100:.2f}%")
-            print(f"      Mean max non-blank probability: {max_nonblank_prob*100:.2f}%")
-            
-            # Logit statistics
-            blank_logits = sample_logits[:, self.blank_id]
-            nonblank_logits = sample_logits[:, :self.blank_id]
-            
-            print(f"\n    Logit Statistics:")
-            print(f"      Blank logits mean: {blank_logits.mean():.2f}, std: {blank_logits.std():.2f}")
-            print(f"      Non-blank logits mean: {nonblank_logits.mean():.2f}, std: {nonblank_logits.std():.2f}")
-            
-            # Warning
-            if blank_prob > 0.95:
-                print(f"\n   WARNING: Blank probability too high ({blank_prob*100:.1f}%)!")
-            elif blank_prob < 0.70:
-                print(f"\n   GOOD: Blank probability reasonable ({blank_prob*100:.1f}%)")
-            
+            print(f"   Mean blank probability: {blank_prob*100:.2f}%")
             print("="*80 + "\n")
         
-        # Convert to text
+        # Convert to text with Vietnamese filtering
         texts = []
         for ids in pred_ids:
             if len(ids) > 0:
                 try:
-                    text = self.tokenizer.decode(ids, skip_special_tokens=True)
+                    # Decode
+                    raw_text = self.tokenizer.decode(ids, skip_special_tokens=True)
+                    
+                    # 🔧 CRITICAL: Filter to Vietnamese only
+                    filtered_text = filter_vietnamese_text(raw_text)
+                    
+                    # If mostly garbage, return empty
+                    if is_mostly_garbage(raw_text):
+                        text = ""
+                    else:
+                        text = filtered_text
+                        
                 except Exception as e:
                     print(f" Decoding error: {e}")
                     text = ""
@@ -198,11 +209,7 @@ class Evaluator:
     
     @torch.no_grad()
     def evaluate(self, model, dataloader, device, max_batches: int = None):
-        """
-        Evaluate model on dataloader
-        
-        🔧 FIXED: Pass full logits to decode_predictions
-        """
+        """Evaluate model on dataloader"""
         model.eval()
         
         all_preds = []
@@ -216,7 +223,6 @@ class Evaluator:
             visual = batch['visual'].to(device)
             target = batch['target'].to(device)
             
-            # Get lengths (for informational purposes only)
             audio_len = batch.get('audio_len')
             visual_len = batch.get('visual_len')
             
@@ -225,14 +231,12 @@ class Evaluator:
             if visual_len is not None:
                 visual_len = visual_len.to(device)
             
-            # Forward
             outputs = model(audio, visual, audio_len=audio_len, visual_len=visual_len, target=None)
             
-            # 🔧 CRITICAL: Decode from FULL logits (not truncated)
             debug_this_batch = (i == 0)
             preds = self.decode_predictions(
                 outputs['ctc_logits'],
-                audio_lengths=None,  # Don't truncate!
+                audio_lengths=None,
                 debug=debug_this_batch
             )
             refs = self.decode_targets(target)

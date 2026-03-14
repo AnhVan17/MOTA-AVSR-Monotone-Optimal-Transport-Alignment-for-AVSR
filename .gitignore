@@ -53,10 +53,16 @@ src/models/aurora_xt.py
 !README.md
 !CHANGELOG.md
 !PIPELINE.md
-!BUG_FIX_LOG.md
 !TRAINING_GUIDE.md
+bug_fix_log.md
 BUG_FIX_LOG.md
-PIPELINE.md
+
+# Local backup and copy files
+* - Copy.py
+* - Copy (*).py
+
+# Temporary scripts
+src/utils/create_vietnamese_vocab.py
 
 # Jupyter
 .ipynb_checkpoints/

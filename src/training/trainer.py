@@ -1,8 +1,7 @@
 """
 MOTA Training Module
 ====================
-Core training logic - shared by training.py và training_modal.py
-Uses absolute imports for Modal compatibility
+🔧 UPDATED: Support length prediction in training loop
 """
 
 import torch
@@ -42,14 +41,15 @@ class Trainer:
             torch.cuda.manual_seed_all(seed)
         
         # Initialize tokenizer (Pruned Mode)
-        print("📝 Initializing tokenizer (Pruned Mode)...")
-        # Try to use pruned vocab if available
+        print("🔍 Initializing tokenizer (Pruned Mode)...")
         self.tokenizer = WhisperTokenizer(use_pruned_vocab=True)
         
-        # Update config with ACTUAL vocab size (e.g. 8000)
-        # 🔧 FIX: Set vocab_size dynamically based on tokenizer
+        # Update config with ACTUAL vocab size
         self.config['model']['vocab_size'] = self.tokenizer.vocab_size
-        print(f"   Vocab Size set to: {self.config['model']['vocab_size']}")
+        
+        mode_str = "PRUNED" if self.tokenizer.use_pruned_vocab else "FULL (FALLBACK)"
+        print(f"📊 [Vocab Check] Mode: {mode_str}")
+        print(f"📊 [Vocab Check] Final Size: {self.config['model']['vocab_size']}")
         
         # Create model
         print("🏗️ Creating model...")
@@ -59,7 +59,6 @@ class Trainer:
         print(f"   Total params: {total_params:,} (~{total_params*4/1024**2:.1f}MB)")
         
         # Create loss
-        # Config đã được update vocab_size mới ở trên, nên loss sẽ được tạo đúng
         self.criterion = create_loss(self.config)
         
         # Create optimizer
@@ -70,16 +69,13 @@ class Trainer:
         )
         
         # Create scheduler with warmup
-        # Warmup helps CTC training converge better
         warmup_epochs = self.config['training'].get('warmup_epochs', 5)
         total_epochs = self.config['training']['num_epochs']
         
         def lr_lambda(epoch):
             if epoch < warmup_epochs:
-                # Linear warmup
                 return (epoch + 1) / warmup_epochs
             else:
-                # Cosine annealing after warmup
                 progress = (epoch - warmup_epochs) / max(1, total_epochs - warmup_epochs)
                 min_lr = float(self.config['training'].get('min_lr', 1e-6))
                 base_lr = float(self.config['training']['learning_rate'])
@@ -112,8 +108,8 @@ class Trainer:
         print(f"   Train batches: {len(self.dataloaders['train'])}")
         print(f"   Val batches: {len(self.dataloaders['val'])}")
         
-        # Create evaluator with correct blank_id (= vocab_size = 51865)
-        blank_id = config['model']['vocab_size']  # blank is at position vocab_size
+        # Create evaluator
+        blank_id = config['model']['vocab_size']
         self.evaluator = Evaluator(self.tokenizer, blank_id=blank_id)
         
         # Training state
@@ -135,6 +131,8 @@ class Trainer:
         total_loss = 0.0
         total_ctc = 0.0
         total_ce = 0.0
+        total_length = 0.0  # 🔧 NEW
+        total_rep = 0.0     # 🔧 NEW
         
         pbar = tqdm(
             self.dataloaders['train'],
@@ -147,61 +145,33 @@ class Trainer:
             visual = batch['visual'].to(self.device)
             target = batch['target'].to(self.device)
             
-            # Load lengths for masking (CRITICAL FIX)
             audio_len = batch.get('audio_len').to(self.device) if 'audio_len' in batch else None
             visual_len = batch.get('visual_len').to(self.device) if 'visual_len' in batch else None
             
-            # DEBUG: Print comprehensive info in first batch of first epoch
+            # DEBUG: First batch comprehensive analysis
             if batch_idx == 0 and self.epoch == 0:
                 print("\n" + "="*80)
                 print("🔍 [DEBUG] FIRST BATCH COMPREHENSIVE ANALYSIS")
                 print("="*80)
                 
-                # 1. Target tokens
                 valid_tokens = target[0][target[0] >= 0]
-                print(f"\n📝 TARGET TOKENS:")
+                print(f"\n🔍 TARGET TOKENS:")
                 print(f"   First sample tokens (first 20): {valid_tokens[:20].tolist()}")
                 print(f"   Token range: [{valid_tokens.min().item()}, {valid_tokens.max().item()}]")
                 print(f"   Token count: {len(valid_tokens)}")
                 print(f"   Decoded: {self.tokenizer.decode(valid_tokens[:20].tolist())}")
                 
-                # 2. Sequence lengths
-                print(f"\n📏 SEQUENCE LENGTHS:")
+                print(f"\n🔍 SEQUENCE LENGTHS:")
                 print(f"   Audio shape: {audio.shape}")
                 print(f"   Visual shape: {visual.shape}")
                 print(f"   Audio_len (first 5): {audio_len[:5].tolist() if audio_len is not None else 'None'}")
                 print(f"   Visual_len (first 5): {visual_len[:5].tolist() if visual_len is not None else 'None'}")
                 print(f"   Target_len (first 5): {(target >= 0).sum(dim=1)[:5].tolist()}")
                 
-                # 3. Feature statistics
-                print(f"\n📊 FEATURE STATISTICS:")
-                print(f"   Audio - mean: {audio.mean().item():.4f}, std: {audio.std().item():.4f}")
-                print(f"   Audio - min: {audio.min().item():.4f}, max: {audio.max().item():.4f}")
-                print(f"   Visual - mean: {visual.mean().item():.4f}, std: {visual.std().item():.4f}")
-                print(f"   Visual - min: {visual.min().item():.4f}, max: {visual.max().item():.4f}")
-                
-                # Check if features are mostly zeros (bad sign!)
-                audio_zeros = (audio.abs() < 1e-6).float().mean().item()
-                visual_zeros = (visual.abs() < 1e-6).float().mean().item()
-                print(f"   Audio zero ratio: {audio_zeros*100:.1f}%")
-                print(f"   Visual zero ratio: {visual_zeros*100:.1f}%")
-                
-                # 4. CHECK FOR SPECIAL TOKENS (Critical for CTC!)
-                print(f"\n🧐 TOKEN CHECK:")
-                max_token = target[target != -100].max().item()
-                print(f"   Max Token ID in Target: {max_token}")
-                if max_token >= 50257:
-                    print("   ⚠️ WARNING: Target contains Special Tokens (>= 50257)!")
-                    print("      CTC will have difficulty converging.")
-                    print("      Ensure Dataset uses tokenizer.encode_for_ctc() not encode()")
-                else:
-                    print("   ✅ No special tokens detected - tokenization looks correct!")
-                
                 print("="*80 + "\n")
             
             # Forward with mixed precision
             with autocast(enabled=self.use_amp):
-                # Now passing lengths to MOTA model
                 outputs = self.model(
                     audio=audio, 
                     visual=visual,
@@ -210,37 +180,39 @@ class Trainer:
                     target=target
                 )
                 
-                # DEBUG: Check CTC logits distribution in first batch of each epoch
+                # DEBUG: CTC logits analysis (first batch only)
                 if batch_idx == 0:
                     ctc_logits = outputs['ctc_logits']
                     probs = torch.softmax(ctc_logits, dim=-1)
                     
-                    # Get probability of blank vs non-blank
-                    blank_prob = probs[:, :, -1].mean().item()  # Last position is blank
+                    blank_prob = probs[:, :, -1].mean().item()
                     nonblank_prob = probs[:, :, :-1].max(dim=-1)[0].mean().item()
                     
                     print(f"\n🎯 [Epoch {self.epoch+1}] CTC Logits Analysis:")
                     print(f"   Mean blank probability: {blank_prob*100:.2f}%")
                     print(f"   Mean max non-blank probability: {nonblank_prob*100:.2f}%")
-                    print(f"   Logits mean: {ctc_logits.mean().item():.4f}, std: {ctc_logits.std().item():.4f}")
                     
-                    # Check if blank is dominating
-                    if blank_prob > 0.9:
-                        print(f"   ⚠️ WARNING: Blank probability too high ({blank_prob*100:.1f}%)!")
-                    elif blank_prob > 0.5:
-                        print(f"   ⚡ Blank still dominating but improving")
-                    else:
-                        print(f"   ✅ Non-blank tokens starting to emerge!")
+                    # 🔧 NEW: Show predicted vs true lengths
+                    if 'predicted_length' in outputs:
+                        pred_lens = outputs['predicted_length'][:5].squeeze(-1)
+                        true_lens = (target >= 0).sum(dim=1)[:5]
+                        print(f"\n📏 Length Prediction:")
+                        print(f"   Predicted: {pred_lens.tolist()}")
+                        print(f"   True:      {true_lens.tolist()}")
+                        mae = (pred_lens - true_lens.float()).abs().mean().item()
+                        print(f"   MAE: {mae:.2f} tokens")
                 
-                # Create target_mask: True for valid tokens, False for padding (-100)
+                # Create target_mask
                 target_mask = (target != -100)
                 
+                # 🔧 NEW: Pass predicted_length to loss
                 loss_dict = self.criterion(
                     ctc_logits=outputs['ctc_logits'],
                     ar_logits=outputs['ar_logits'],
                     targets=target,
                     target_mask=target_mask,
-                    input_lengths=audio_len,  # CRITICAL: Pass actual encoder output lengths
+                    input_lengths=audio_len,
+                    predicted_lengths=outputs.get('predicted_length'),  # 🔧 NEW
                     epoch=self.epoch,
                     max_epochs=self.config['training']['num_epochs']
                 )
@@ -271,12 +243,15 @@ class Trainer:
             total_loss += loss_dict['total_loss'].item()
             total_ctc += loss_dict['ctc_loss'].item()
             total_ce += loss_dict['ce_loss'].item()
+            total_length += loss_dict.get('length_loss', torch.tensor(0.0)).item()  # 🔧 NEW
+            total_rep += loss_dict.get('rep_penalty', torch.tensor(0.0)).item()     # 🔧 NEW
             
             # Update progress bar
             pbar.set_postfix({
                 'loss': f"{loss_dict['total_loss'].item():.4f}",
                 'ctc': f"{loss_dict['ctc_loss'].item():.4f}",
                 'ce': f"{loss_dict['ce_loss'].item():.4f}",
+                'len': f"{loss_dict.get('length_loss', torch.tensor(0.0)).item():.4f}",  # 🔧 NEW
                 'lr': f"{self.optimizer.param_groups[0]['lr']:.2e}"
             })
             
@@ -290,7 +265,9 @@ class Trainer:
         return {
             'loss': total_loss / n,
             'ctc_loss': total_ctc / n,
-            'ce_loss': total_ce / n
+            'ce_loss': total_ce / n,
+            'length_loss': total_length / n,  # 🔧 NEW
+            'rep_penalty': total_rep / n      # 🔧 NEW
         }
     
     @torch.no_grad()
@@ -311,7 +288,7 @@ class Trainer:
         print(f"   CER: {results['cer']:.2f}%")
         
         if results.get('samples'):
-            print(f"\n📝 Samples:")
+            print(f"\n🔍 Samples:")
             for i, (pred, ref) in enumerate(results['samples'][:2]):
                 print(f"   [{i}] Pred: {pred}")
                 print(f"       Ref:  {ref}")
@@ -337,7 +314,7 @@ class Trainer:
     def train(self):
         """Main training loop"""
         print("\n" + "="*70)
-        print("🚀 Starting Training")
+        print("🚀 Starting Training with Length Prediction")
         print("="*70)
         
         for epoch in range(self.config['training']['num_epochs']):
@@ -350,6 +327,8 @@ class Trainer:
             print(f"   Loss: {train_metrics['loss']:.4f}")
             print(f"   CTC: {train_metrics['ctc_loss']:.4f}")
             print(f"   CE: {train_metrics['ce_loss']:.4f}")
+            print(f"   Length: {train_metrics['length_loss']:.4f}")  # 🔧 NEW
+            print(f"   Rep Penalty: {train_metrics['rep_penalty']:.4f}")  # 🔧 NEW
             
             # Validate
             val_metrics = self.validate()

@@ -5,7 +5,7 @@ import yaml
 from pathlib import Path
 
 # --- Config ---
-APP_NAME = "avsr-train-CTC-FOCUS-v3033422"  
+APP_NAME = "avsr-train-SUPERSTRICT-v7"  # Super strict vocab ~2-4k tokens
 VOLUME_PROCESSED = "avsr-vicocktail-processed" 
 
 # --- Image Definition (Robust Numpy Fix) ---
@@ -82,9 +82,9 @@ def train_remote():
         else:
             print("✅ vicocktail.py is correct (no _tokenize override)")
     
-    # 2. Check tokenizer has encode_for_ctc
+    # 2. Check tokenizer has encode_for_ctc AND uses pruned vocab
     from src.data.tokenizers.whisper import WhisperTokenizer
-    tok = WhisperTokenizer()
+    tok = WhisperTokenizer(use_pruned_vocab=True)  # CRITICAL: Use pruned!
     
     if hasattr(tok, 'encode_for_ctc'):
         print("✅ Tokenizer has encode_for_ctc()")
@@ -92,12 +92,32 @@ def train_remote():
         print("❌ Tokenizer missing encode_for_ctc()!")
         return
     
+    # 2b. CRITICAL: Check if pruned vocab is active
+    print(f"\n🔍 VOCAB CHECK:")
+    print(f"   Mode: {'PRUNED' if tok.use_pruned_vocab else 'FULL (BAD!)'}")
+    print(f"   Vocab size: {tok.vocab_size}")
+    
+    if not tok.use_pruned_vocab or tok.vocab_size > 10000:
+        print("❌ CRITICAL: Vocab pruning NOT active!")
+        print("   Model will predict foreign tokens (Korean, Russian, etc.)")
+        print("   Check if id_mapping.pkl exists in /root/src/data/vocab_pruned/")
+        
+        # Check if file exists
+        mapping_path = "/root/src/data/vocab_pruned/id_mapping.pkl"
+        if os.path.exists(mapping_path):
+            print(f"   ✅ Mapping file exists: {mapping_path}")
+        else:
+            print(f"   ❌ Mapping file NOT found: {mapping_path}")
+        return
+    else:
+        print(f"   ✅ Pruned vocab active: {tok.vocab_size} tokens")
+    
     # 3. Test tokenization with Vietnamese text
     test_tokens = tok.encode_for_ctc("xin chào việt nam")
-    print(f"✅ Test tokens for 'xin chào việt nam': {test_tokens}")
+    print(f"\n✅ Test tokens for 'xin chào việt nam': {test_tokens}")
     
-    if test_tokens and test_tokens[0] >= 50257:
-        print("❌ STILL HAS SPECIAL TOKENS! First token >= 50257")
+    if test_tokens and max(test_tokens) >= tok.vocab_size:
+        print(f"❌ Token ID exceeds vocab size! Max: {max(test_tokens)}, Vocab: {tok.vocab_size}")
         return
     else:
         print(f"✅ Token range is valid: [{min(test_tokens)}, {max(test_tokens)}]")

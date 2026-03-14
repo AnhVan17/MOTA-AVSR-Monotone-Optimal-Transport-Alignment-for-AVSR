@@ -100,10 +100,11 @@ class WhisperTokenizer:
         if vocab_path is None:
             # Try common locations
             possible_paths = [
+                "src/data/vocab_pruned",
+                "/root/src/data/vocab_pruned",
                 "./vocab_pruned",
                 "./data/vocab_pruned",
                 "../vocab_pruned",
-                "src/data/vocab_pruned"
             ]
             
             for path in possible_paths:
@@ -139,6 +140,16 @@ class WhisperTokenizer:
         logger.info(f"✅ Loaded pruned vocab: {self.pruned_vocab_size} tokens")
         logger.info(f"   Original: {self.tokenizer.vocab_size} -> Pruned: {self.pruned_vocab_size}")
         logger.info(f"   Reduction: {(1 - self.pruned_vocab_size / self.tokenizer.vocab_size) * 100:.1f}%")
+        
+        # 🔧 DEBUG: Show sample tokens from reverse mapping
+        sample_new_ids = [0, 1, 100, 500, 1000, 2000, 3000]
+        print(f"\n🔍 [DEBUG] Sample tokens in pruned vocab:")
+        for new_id in sample_new_ids:
+            if new_id in self.reverse_mapping:
+                old_id = self.reverse_mapping[new_id]
+                token = self.tokenizer.convert_ids_to_tokens(old_id)
+                print(f"   new_id={new_id} -> old_id={old_id} -> token='{token}'")
+        print()
 
     def _log_init(self):
         """Log initialization info"""

@@ -1,5 +1,6 @@
 # AURORA-XT Phase 1 Configuration (Vicocktail)
 # Pre-training on Vicocktail Features (Fast Training)
+# 🔧 NEW: Added Length Prediction to prevent over-generation
 
 # Model Architecture
 model:
@@ -11,11 +12,14 @@ model:
   num_heads: 4
   vocab_size: 51865         # Whisper full vocab (blank will be at 51865)
   dropout: 0.1
+  max_target_len: 500       # 🔧 NEW: Max target length for length predictor
+  eos_id: 51864             # 🔧 NEW: EOS token ID (vocab_size - 1)
 
 # Loss Configuration  
 loss:
-  ctc_weight: 1.0           # 🔧 FIX: Prioritize alignment (CTC) to fix repetition
-  ce_weight: 0.2            # Reduce CE influence initially
+  ctc_weight: 0.6           # 🔧 Reduced: giảm ảnh hưởng CTC
+  ce_weight: 0.2            # Keep low for Phase 1
+  length_weight: 0.5        # 🔧 NEW: Weight for length prediction loss
   # blank_id is auto-set to vocab_size (51865) in losses.py
 
 # Data Configuration
@@ -46,5 +50,11 @@ max_eval_batches: 50
 # Logging & Checkpointing
 use_wandb: true
 wandb_project: "aurora-xt-vicocktail"
-wandb_run: "phase1_features"
+wandb_run: "phase1_features_length_pred"  # 🔧 NEW: Updated run name
 checkpoint_dir: "/mnt/checkpoints/phase1"
+
+# 🔧 NEW: Length Prediction Settings
+length_prediction:
+  enabled: true             # Enable length prediction
+  warmup_epochs: 5          # Start length loss after 5 epochs
+  max_error_tolerance: 10   # Max allowed error in token count

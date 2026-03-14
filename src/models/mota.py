@@ -152,6 +152,7 @@ class MOTA(nn.Module):
         outputs = {
             'ctc_logits': decoder_out['ctc_logits'],
             'ar_logits': decoder_out['ar_logits'],
+            'predicted_length': decoder_out.get('predicted_length'),  # 🔧 NEW
             'gate_weights': gate_out['gate_weights'],
             'q_audio': gate_out['q_audio'],
             'q_visual': gate_out['q_visual']
