@@ -66,3 +66,4 @@ scripts\list_checkpoints.py
 !/*README*.md
 check_processed_data.py
 check_tokenizer.py
+scripts/test_whisper_baseline.py    
