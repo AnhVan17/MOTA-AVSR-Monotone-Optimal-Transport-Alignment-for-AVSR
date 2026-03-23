@@ -43,7 +43,7 @@ flowchart TB
 
 | Stage | Input | Output | Tool |
 |-------|-------|--------|------|
-| Crop | Video | Mouth ROI | MediaPipe |
+| Crop | Video | Mouth ROI | FaceAlignment |
 | Audio | Video | Waveform | FFmpeg |
 | Audio Feat | Waveform | T x 768 | Whisper |
 | Visual Feat | Frames | T x 512 | ResNet18 |
@@ -347,7 +347,7 @@ x_norm = x * (0.1 / RMS)
 ### 8.1 Install
 
 ```bash
-pip install torch transformers timm jiwer mediapipe
+pip install torch transformers timm jiwer face-alignment
 pip install modal && modal token new
 ```
 

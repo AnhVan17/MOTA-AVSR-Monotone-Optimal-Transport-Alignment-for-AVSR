@@ -51,5 +51,8 @@ Thumbs.db
 
 # untrack folders
 notebooks/
-
-docs/
+scripts\test_whisper_baseline.py
+scripts\verify_data.py
+scripts\test_audio_only_local.py
+scripts\run_vicocktail_pipeline.py
+scripts\list_checkpoints.py

@@ -4,7 +4,7 @@ import torch
 import cv2
 import numpy as np
 import timm
-import mediapipe as mp
+import face_alignment
 import io
 import soundfile as sf
 import random
@@ -48,32 +48,24 @@ class PreprocessConfig:
 # --- 1. VIDEO PROCESSOR (Mouth Crop) ---
 class VideoProcessor:
     """
-    Dedicated class for cropping mouth region (ROI) from video using MediaPipe.
+    Dedicated class for cropping mouth region (ROI) from video using face-alignment (GPU).
     Or simply loading frames if use_precropped=True.
     """
-    def __init__(self, use_precropped=False):
+    def __init__(self, use_precropped=False, device=None):
         self.use_precropped = use_precropped
+        self.device = device or PreprocessConfig.DEVICE
         
         if not self.use_precropped:
-            # CRITICAL FIX: Hide GPU from MediaPipe to prevent EGL Context conflicts
-            # In headless environments, MediaPipe's attempt to use GPU/EGL often crashes
-            # when co-existing with PyTorch CUDA. forcing CPU for FaceMesh is safe and stable.
-            original_cuda_visible = os.environ.get("CUDA_VISIBLE_DEVICES")
-            try:
-                os.environ["CUDA_VISIBLE_DEVICES"] = "" # Hide GPU
-                self.face_mesh = mp.solutions.face_mesh.FaceMesh(
-                    static_image_mode=False,
-                    max_num_faces=1,
-                    refine_landmarks=True,
-                    min_detection_confidence=0.3,
-                    min_tracking_confidence=0.3
-                )
-            finally:
-                # Restore GPU visibility for PyTorch
-                if original_cuda_visible is not None:
-                    os.environ["CUDA_VISIBLE_DEVICES"] = original_cuda_visible
-                else:
-                    del os.environ["CUDA_VISIBLE_DEVICES"]
+            # GPU-native face detection using face-alignment (PyTorch-based)
+            # No EGL/OpenGL conflicts — runs directly on CUDA alongside PyTorch
+            logger.info(f"Initializing face-alignment on {self.device}...")
+            self.fa = face_alignment.FaceAlignment(
+                face_alignment.LandmarksType.TWO_D,
+                device=self.device,
+                flip_input=False,
+                face_detector='sfd'  # SFD detector — robust for side-angle faces
+            )
+            logger.info("face-alignment initialized successfully.")
 
     def process(self, video_path):
         cap = cv2.VideoCapture(video_path)
@@ -165,7 +157,7 @@ class VideoProcessor:
         return looped[:target_frames]
 
     def extract_mouth(self, frame, prev_bbox=None):
-        """Mouth cropping logic using MediaPipe"""
+        """Mouth cropping logic using face-alignment (GPU-native)"""
         h, w = frame.shape[:2]
         
         # If previous bbox exists, try fast crop
@@ -174,21 +166,21 @@ class VideoProcessor:
             if 0 <= x1 < x2 <= w and 0 <= y1 < y2 <= h:
                 return frame[y1:y2, x1:x2], prev_bbox
 
-        # If not available or need to re-detect -> Run MediaPipe
+        # Detect face landmarks using face-alignment
         try:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = self.face_mesh.process(rgb)
+            landmarks = self.fa.get_landmarks_from_image(rgb)
             
-            if results.multi_face_landmarks:
-                lm = results.multi_face_landmarks[0].landmark
-                # Landmark points around the mouth
-                mouth_idx = [13, 14, 61, 291, 78, 308, 324, 17]
-                xs = [lm[i].x * w for i in mouth_idx]
-                ys = [lm[i].y * h for i in mouth_idx]
+            if landmarks is not None and len(landmarks) > 0:
+                # 68-point landmarks: mouth outer = [48:60], mouth inner = [60:68]
+                # Use all 20 mouth points [48:68] for robust center calculation
+                mouth_points = landmarks[0][48:68]
                 
+                xs = mouth_points[:, 0]
+                ys = mouth_points[:, 1]
                 cx, cy = int(np.mean(xs)), int(np.mean(ys))
                 
-                # Calculate crop radius
+                # Calculate crop radius (same formula as original)
                 radius = max(
                     int((max(xs) - min(xs)) * 1.8) // 2,
                     int((max(ys) - min(ys)) * 1.8) // 2,
@@ -203,7 +195,7 @@ class VideoProcessor:
                 bbox = (x1, y1, x2, y2)
                 return frame[y1:y2, x1:x2], bbox
         except Exception as e:
-            logger.warning(f"FaceMesh failed for frame (fallback to center crop): {e}")
+            logger.warning(f"face-alignment failed for frame (fallback to center crop): {e}")
             pass
             
         # Fallback: Crop center
@@ -395,8 +387,8 @@ class RawVideoDataset(Dataset):
         self.use_precropped = use_precropped
         
         # Optimization: If running in main process (NUM_WORKERS=0), 
-        # instantiate processor ONCE to reuse MediaPipe graph.
-        # This prevents EGL context creation/destruction spam.
+        # instantiate processor ONCE to reuse face-alignment model.
+        # This avoids repeated GPU model loading overhead.
         self.processor = None
         if PreprocessConfig.NUM_WORKERS == 0:
             logger.info("Initializing persistent VideoProcessor (Single Process Mode)")
@@ -592,8 +584,7 @@ class BasePreprocessor(ABC):
             video_paths = [m['full_path'] for m in metadata]
             
             # Use DataLoader for Visual (Frames are heavy, supports Batching)
-            # CRITICAL: Init Dataset (FaceMesh) BEFORE loading PyTorch Models to CUDA
-            # This prevents MediaPipe EGL context from conflicting with PyTorch CUDA context
+            # Init Dataset with VideoProcessor (face-alignment shares CUDA with PyTorch)
             dataset = RawVideoDataset(video_paths, use_precropped=self.use_precropped)
             
             # LOAD MODELS NOW

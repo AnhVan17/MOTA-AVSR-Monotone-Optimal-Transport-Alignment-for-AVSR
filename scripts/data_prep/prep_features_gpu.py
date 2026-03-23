@@ -25,7 +25,7 @@ image = (
         "timm==0.9.12",
         "webdataset==0.2.79", 
         "huggingface_hub",
-        "mediapipe==0.10.9",
+        "face-alignment>=1.4.0",
         "opencv-python-headless", # Still needed for VideoProcessor cv2
         "soundfile",
         "librosa",

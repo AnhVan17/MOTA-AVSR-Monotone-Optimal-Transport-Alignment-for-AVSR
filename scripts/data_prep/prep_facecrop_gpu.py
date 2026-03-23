@@ -6,18 +6,20 @@ import shutil
 from pathlib import Path
 
 # --- Config ---
-APP_NAME = "avsr-prep-facemesh-cpu"
+APP_NAME = "avsr-prep-facecrop-gpu"
 VOLUME_NAME = "avsr-volume"
 DATA_ROOT = "/mnt/vicocktail_raw"
 OUTPUT_ROOT = "/mnt/vicocktail_cropped"
 
 # --- Image Definition ---
-# Lightweight image for CPU-only processing
+# GPU image for face-alignment processin
 image = (
     modal.Image.debian_slim(python_version="3.10")
-    .apt_install("ffmpeg", "libgl1-mesa-glx") # System libs for OpenCV/MediaPipe
+    .apt_install("ffmpeg", "libgl1-mesa-glx")  # System libs for OpenCV
     .pip_install(
-        "mediapipe==0.10.9", # Cpu-stable version
+        "torch>=2.1.0",
+        "torchvision>=0.16.0",
+        "face-alignment>=1.4.0",  # GPU-native face detection
         "opencv-python-headless",
         "numpy<2",
         "tqdm",
@@ -72,7 +74,8 @@ def process_video_task(args):
 @app.function(
     image=image,
     volumes={"/mnt": volume},
-    cpu=8,             # Request high CPU cores
+    gpu="T4",          # GPU for face-alignment (fast & cheap)
+    cpu=4,
     timeout=7200,      # 2 hours
     memory=16384       # 16GB RAM for parallel workers
 )

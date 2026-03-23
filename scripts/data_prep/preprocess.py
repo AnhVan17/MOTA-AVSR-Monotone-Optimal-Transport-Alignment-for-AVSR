@@ -8,7 +8,8 @@ import threading
 
 # !!! DEPRECATED !!!
 # This script is a Monolithic Preprocessor that is known to cause EGL/GPU context conflicts
-# (MediaPipe crashing when initialized alongside PyTorch CUDA).
+# (Previously: MediaPipe crashing when initialized alongside PyTorch CUDA).
+# Now uses face-alignment (GPU-native), no context conflicts.
 #
 # PLEASE USE THE SPECIALIZED MICROSERVICES INSTEAD:
 # 1. scripts/modal/prep_facemesh_cpu.py  (CPU-only, stable FaceMesh)
@@ -40,7 +41,8 @@ crop_image = (
     get_base_image()
     .pip_install(
         "opencv-python-headless",
-        "mediapipe==0.10.9" # Optimized for CPU
+        "face-alignment>=1.4.0",  # GPU-native face detection
+        "torch>=2.1.0",  # Required by face-alignment
     )
     .add_local_dir("src", remote_path="/root/src")
 )
@@ -66,7 +68,7 @@ extract_image = (
         "huggingface-hub==0.20.3",
         "soundfile==0.12.1",
         "opencv-python-headless",
-        "mediapipe==0.10.9",
+        "face-alignment>=1.4.0",
         "numpy<2",  # Force again to prevent override
         "av",        # PyAV for robust audio extraction
         "jiwer",
@@ -278,7 +280,7 @@ def run_extract_stage(dataset_name: str, input_path: str, output_path: str, mani
     os.makedirs(output_path, exist_ok=True)
     
     # Init Processor via Factory
-    # use_precropped=True is KEY here to skip MediaPipe re-detection
+    # use_precropped=True is KEY here to skip face detection re-detection
     processor = get_preprocessor(dataset_name, data_root=input_path, use_precropped=True)
     
     # Run Extraction with output_dir to save features in correct location
