@@ -56,3 +56,13 @@ scripts\verify_data.py
 scripts\test_audio_only_local.py
 scripts\run_vicocktail_pipeline.py
 scripts\list_checkpoints.py
+
+# Ignore markdown files in the root directory
+/*.md
+
+# Except README files
+!/README.MD
+!/VICOCKTAIL_README.md
+!/*README*.md
+check_processed_data.py
+check_tokenizer.py

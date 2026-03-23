@@ -1,15 +1,3 @@
-"""
-Whisper-small Direct Inference (No Training!)
-==============================================
-Dùng openai/whisper-small trực tiếp để infer trên ViCocktail
-→ Baseline để so sánh với Audio-Only model
-
-Expected Performance:
-- Whisper-small multilingual pretrained
-- Vietnamese support có sẵn
-- WER dự đoán: ~15-25% (tùy quality)
-"""
-
 import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 import torchaudio
