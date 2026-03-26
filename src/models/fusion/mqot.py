@@ -59,7 +59,7 @@ class MQOTLayer(nn.Module):
         
         # Normalized temporal distance
         time_dist = torch.abs(i / Ta - j / Tv)  # [Ta, Tv]
-        C_time = time_dist.unsqueeze(0).expand(B, -1, -1)  # [B, Ta, Tv]
+        C_time = time_dist.unsqueeze(0).expand(B, -1, -1).clone()  # [B, Ta, Tv]
         
         # 3. Quality penalty
         # Low quality → High cost
@@ -79,30 +79,30 @@ class MQOTLayer(nn.Module):
         Sinkhorn algorithm in log-space (numerically stable)
         """
         # Log-space formulation
+        B, Ta, Tv = cost.shape
         K = -cost / self.epsilon  # [B, Ta, Tv]
-        
-        # Initialize dual variables
-        u = torch.zeros_like(K[:, :, 0])  # [B, Ta]
-        v = torch.zeros_like(K[:, 0, :])  # [B, Tv]
-        
-        # Sinkhorn iterations
-        for i in range(self.n_iters):
-            u_prev = u.clone()
-            
-            # Update u
+
+        u = torch.zeros(B, Ta, device=cost.device)
+        v = torch.zeros(B, Tv, device=cost.device)
+
+        for _ in range(self.n_iters):
+            u_prev, v_prev = u.clone(), v.clone()
+
+            # Fix u using current v (row normalization)
             u = -torch.logsumexp(K + v.unsqueeze(1), dim=2)
-            
-            # Update v
-            v = -torch.logsumexp(K + u.unsqueeze(2), dim=1)
-            
-            # Check convergence
-            err = torch.max(torch.abs(u - u_prev))
-            if err < 1e-3:
+            # Fix v using updated u (column normalization)
+            v = -torch.logsumexp(K.transpose(1, 2) + u.unsqueeze(1), dim=2)
+
+            if torch.max(torch.abs(u - u_prev)) < 1e-3:
                 break
-        
-        # Compute transport plan
+
+        # Row-stochastic transport plan: P.sum(dim=-1) = 1 for each row
+        # NOTE: Log-space Sinkhorn only guarantees both margins converge to 1
+        # when Ta == Tv. With Ta != Tv, explicit row-normalization is needed
+        # to ensure P[i, :].sum() == 1 for CTC/GuidedAttention weighting.
         transport = torch.exp(K + u.unsqueeze(2) + v.unsqueeze(1))
-        
+        transport = transport / (transport.sum(dim=-1, keepdim=True) + 1e-8)
+
         return transport
     
     def forward(
@@ -161,9 +161,14 @@ class QualityEstimator(nn.Module):
 
 class GuidedAttention(nn.Module):
     """
-    Cross-attention with transport map guidance
+    Manual multi-head cross-attention với transport map bias trực tiếp.
+
+    Fix P0-3: PyTorch nn.MultiheadAttention mong đợi attn_mask shape [B, H, L, S].
+    Code cũ truyền [B*H, L, S] → shape mismatch → transport plan KHÔNG ảnh hưởng attention.
+
+    Giải pháp: Tự implement attention, cộng transport bias trực tiếp vào attention scores.
     """
-    
+
     def __init__(
         self,
         embed_dim: int,
@@ -171,25 +176,27 @@ class GuidedAttention(nn.Module):
         dropout: float = 0.1
     ):
         super().__init__()
-        
+        assert embed_dim % num_heads == 0, "embed_dim must be divisible by num_heads"
+
         self.num_heads = num_heads
-        
-        # Multi-head attention
-        self.attn = nn.MultiheadAttention(
-            embed_dim,
-            num_heads,
-            dropout=dropout,
-            batch_first=True
-        )
-        
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        # QKV projections
+        self.W_q = nn.Linear(embed_dim, embed_dim)
+        self.W_k = nn.Linear(embed_dim, embed_dim)
+        self.W_v = nn.Linear(embed_dim, embed_dim)
+        self.W_o = nn.Linear(embed_dim, embed_dim)
+
+        self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(embed_dim)
-        
-        # Gated residual (zero-init for stability)
+
+        # Gated residual (zero-init → identity initially → stable)
         self.gate = nn.Parameter(torch.zeros(1))
-        
-        # Attention bias scale (learnable)
-        self.scale = nn.Parameter(torch.tensor(10.0))
-    
+
+        # Learnable transport bias scale (replaces fixed self.scale)
+        self.bias_scale = nn.Parameter(torch.tensor(10.0))
+
     def forward(
         self,
         q: torch.Tensor,
@@ -198,28 +205,42 @@ class GuidedAttention(nn.Module):
         guide_map: torch.Tensor
     ) -> torch.Tensor:
         """
-        Forward pass
+        Args:
+            q: [B, Ta, D] — audio query
+            k: [B, Tv, D] — visual key
+            v: [B, Tv, D] — visual value
+            guide_map: [B, Ta, Tv] — transport plan P (từ Sinkhorn)
+
+        Returns:
+            output: [B, Ta, D] — attended features
         """
         B, Ta, D = q.shape
         Tv = k.shape[1]
-        
-        # Optimize (Fix 0.9.3): Log first, then expand (Avoids huge log computation and extra copy)
-        # 1. Compute Base Bias [B, Ta, Tv]
-        base_bias = torch.log(guide_map + 1e-8) * self.scale
-        
-        # 2. Expand and Reshape [B, Ta, Tv] -> [B, H, Ta, Tv] -> [B*H, Ta, Tv]
-        attn_bias = base_bias.unsqueeze(1).expand(-1, self.num_heads, -1, -1).reshape(B * self.num_heads, Ta, Tv)
-        
-        # Cross-attention with bias
-        context, _ = self.attn(
-            query=q,
-            key=k,
-            value=v,
-            attn_mask=attn_bias,
-            need_weights=False
-        )
-        
-        # Gated residual
-        output = self.norm(q + self.gate * context)
-        
+
+        # --- Bước 1: QKV projection ---
+        Q = self.W_q(q).view(B, Ta, self.num_heads, self.head_dim).transpose(1, 2)  # [B, H, Ta, hd]
+        K = self.W_k(k).view(B, Tv, self.num_heads, self.head_dim).transpose(1, 2)  # [B, H, Tv, hd]
+        V = self.W_v(v).view(B, Tv, self.num_heads, self.head_dim).transpose(1, 2)  # [B, H, Tv, hd]
+
+        # --- Bước 2: Attention scores + transport bias ---
+        # Base scores: [B, H, Ta, Tv]
+        scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale
+
+        # Transport bias: log(P_ij) × scale
+        # guide_map [B, Ta, Tv] → [B, 1, Ta, Tv] → broadcast sang [B, H, Ta, Tv]
+        if guide_map is not None:
+            transport_bias = torch.log(guide_map + 1e-8).unsqueeze(1) * F.softplus(self.bias_scale)
+            scores = scores + transport_bias
+
+        # --- Bước 3: Softmax + Dropout ---
+        attn_weights = self.dropout(F.softmax(scores, dim=-1))
+
+        # --- Bước 4: Aggregate values ---
+        context = torch.matmul(attn_weights, V)  # [B, H, Ta, hd]
+        context = context.transpose(1, 2).reshape(B, Ta, D)  # [B, Ta, D]
+        output = self.W_o(context)
+
+        # --- Bước 5: Gated residual ---
+        output = self.norm(q + F.sigmoid(self.gate) * output)
+
         return output

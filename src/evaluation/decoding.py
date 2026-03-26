@@ -7,7 +7,7 @@ class CTCDecoder:
     Handles CTC Decoding strategies (Greedy, and Beam Search).
     """
     
-    def __init__(self, tokenizer, blank_id: int = 4):
+    def __init__(self, tokenizer, blank_id: int = 50257):
         self.tokenizer = tokenizer
         self.blank_id = blank_id
         
@@ -169,11 +169,13 @@ class CTCDecoder:
         
     def decode_targets(self, targets: torch.Tensor) -> List[str]:
         """
-        Decode target tensor to text.
+        Decode target tensor to text, filtering out padding tokens.
         """
         decoded_texts = []
         for seq in targets:
-            text = self.tokenizer.decode(seq, skip_special_tokens=True)
+            # Filter padding tokens before decoding
+            valid_tokens = seq[seq != self.blank_id]
+            text = self.tokenizer.decode(valid_tokens, skip_special_tokens=True)
             decoded_texts.append(text.strip())
         return decoded_texts
 

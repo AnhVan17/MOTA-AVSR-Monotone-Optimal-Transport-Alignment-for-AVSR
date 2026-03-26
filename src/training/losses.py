@@ -30,8 +30,8 @@ class HybridLoss(nn.Module):
         ctc_weight: float = 0.3,
         ce_weight: float = 0.7,
         quality_loss_weight: float = 0.1, # Weight for aux loss
-        pad_id: int = 0,
-        blank_id: int = 4
+        pad_id: int = 50257,
+        blank_id: int = 50257
     ):
         super().__init__()
         
@@ -40,14 +40,15 @@ class HybridLoss(nn.Module):
         self.quality_loss_weight = quality_loss_weight
         self.pad_id = pad_id
         self.blank_id = blank_id
-        
+        self.sot_id = 50258  # Whisper Start-of-Transcript token
+
         # CTC loss
         self.ctc_loss = nn.CTCLoss(
             blank=blank_id,
             reduction='mean',
             zero_infinity=True
         )
-        
+
         # CrossEntropy loss
         self.ce_loss = nn.CrossEntropyLoss(
             ignore_index=pad_id,
@@ -125,11 +126,12 @@ class HybridLoss(nn.Module):
                 # Blank ID is 50257 (EOT). Targets MUST NOT contain blank_id.
                 # Also filter pad_id.
                 # We do NOT filter by range < 50257 because valid text tokens can be > 50257 in some vocabs.
-                valid_mask = (target_seq != self.blank_id) & (target_seq != self.pad_id)
-                
-                # Optional: Filter SOT if known? (50258). 
-                # For now, just ensuring Blank is gone is the most critical fix.
-                valid_tokens = target_seq[valid_mask]
+                valid_mask = (
+                    (target_seq != self.blank_id) &
+                    (target_seq != self.pad_id) &
+                    (target_seq != self.sot_id)
+                )
+                valid_tokens = target_seq[valid_mask] # Filter SOT=50258 for CTC targets.
                 
                 targets_list.append(valid_tokens)
                 actual_lengths.append(len(valid_tokens))
@@ -168,24 +170,15 @@ class HybridLoss(nn.Module):
             # Usually aligned or Teacher Forcing. 
             # Assuming standard AR: Output L matches Target L.
             
-            # Slicing for Next Token Prediction
-            if ar_logits.size(1) == targets.size(1):
-                 logits_shifted = ar_logits[:, :-1, :].contiguous()
-                 targets_shifted = targets[:, 1:].contiguous()
-            else:
-                 # Fallback/Mismatch shape handling or direct
-                 # Assume user logic ensures shape alignment
-                 logits_shifted = ar_logits.transpose(1, 2) # [B, V, L] for CE if needed?
-                 # No, CE expects [B, V, d1...] or [B, C] for simple
-                 # Flattening strategy is safest
-                 logits_shifted = ar_logits[:, :-1, :].contiguous()
-                 targets_shifted = targets[:, 1:].contiguous()
+            # Shift for next-token prediction: logits[:, t] predicts targets[:, t+1]
+            logits_shifted = ar_logits[:, :-1, :].contiguous()
+            targets_shifted = targets[:, 1:].contiguous()
 
-            # Flatten
+            # Flatten: [B*L, V] for CrossEntropy
             logits_flat = logits_shifted.view(-1, ar_logits.size(-1))
-            targets_flat = targets_shifted.view(-1)
+            ce_targets_flat = targets_shifted.view(-1)
             
-            ce_loss_val = self.ce_loss(logits_flat, targets_flat)
+            ce_loss_val = self.ce_loss(logits_flat, ce_targets_flat)
         
         # ============================
         # 3. Quality Supervision (Aux)
@@ -235,12 +228,12 @@ class HybridLoss(nn.Module):
 
 # Factory
 def create_loss(config: Dict) -> HybridLoss:
-    """Create loss from config"""
+    """Create loss from config."""
     return HybridLoss(
         vocab_size=config['model']['vocab_size'],
         ctc_weight=config['loss']['ctc_weight'],
         ce_weight=config['loss']['ce_weight'],
-        quality_loss_weight=config['loss'].get('quality_loss_weight', 0.0), # Default 0
-        pad_id=0,
-        blank_id=config['model'].get('blank_id', 50257) # Default to EOT if missing
+        quality_loss_weight=config['loss'].get('quality_loss_weight', 0.0),
+        pad_id=config['model'].get('pad_id', 50257),
+        blank_id=config['model'].get('blank_id', 50257),
     )
