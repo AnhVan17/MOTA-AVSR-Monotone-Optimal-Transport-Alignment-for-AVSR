@@ -91,10 +91,14 @@ class MOTA(nn.Module):
             # MQOT Components
             self.quality_estimator = QualityEstimator(mqot_dim)
             self.mqot = MQOTLayer(
+                dim=mqot_dim,
                 lambda_time=config.get('mqot', {}).get('lambda_time', 0.5),
                 lambda_qual=config.get('mqot', {}).get('lambda_qual', 5.0),
-                epsilon=config.get('mqot', {}).get('epsilon', 0.15),
-                n_iters=config.get('mqot', {}).get('n_iters', 20)
+                epsilon_init=config.get('mqot', {}).get('epsilon', 0.15),
+                n_iters=config.get('mqot', {}).get('n_iters', 20),
+                use_unbalanced=config.get('mqot', {}).get('use_unbalanced', True),
+                kl_penalty=config.get('mqot', {}).get('kl_penalty', 0.1),
+                num_heads=config.get('mqot', {}).get('num_heads', 1),
             )
             self.guided_attention = GuidedAttention(
                 mqot_dim,

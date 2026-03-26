@@ -11,5 +11,5 @@ logging:
 
 data:
   train_manifest: "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000_manifest.jsonl"
-  val_manifest: "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000_manifest.jsonl"
+  val_manifest: "/mnt/vicocktail_features/avvn-val_manifest.jsonl"
   data_root: "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000"

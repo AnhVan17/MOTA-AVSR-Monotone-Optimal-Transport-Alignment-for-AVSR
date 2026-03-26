@@ -1,31 +1,51 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from typing import Dict, Optional, List
+from typing import Dict
 from pathlib import Path
 from tqdm import tqdm
-import math
 
-# Project Modules
 # Project Modules
 from src.models.mota import create_model
 from src.data.loader import build_dataloader
-from src.data.tokenizers.whisper import WhisperTokenizer  # Import Tokenizer
+from src.data.tokenizers.whisper import WhisperTokenizer
 from src.training.losses import create_loss
 from src.evaluation.metrics import MetricCalculator
 from src.evaluation.decoding import CTCDecoder
 from src.utils.logging_utils import setup_logger
 from src.utils.common import (
-    AverageMeter, 
-    save_checkpoint, 
-    load_checkpoint, 
+    AverageMeter,
+    save_checkpoint,
+    load_checkpoint,
     get_lr,
     EarlyStopping
 )
 
 # Initialize Logger
 logger = setup_logger(__name__)
+
+_wandb_logger = None  # Lazy init
+
+
+def _get_wandb_logger(config: Dict):
+    """Lazy WandB init — only when use_wandb: true in config."""
+    global _wandb_logger
+    if _wandb_logger is not None:
+        return _wandb_logger
+
+    if not config.get('logging', {}).get('use_wandb', False):
+        return None
+
+    try:
+        from src.utils.wandb_logger import WandbLogger
+        _wandb_logger = WandbLogger(
+            project=config['logging'].get('wandb_project', 'mota-avsr'),
+            name=config['logging'].get('wandb_name', None),
+            config=config,
+        )
+        return _wandb_logger
+    except ImportError:
+        logger.warning("wandb not installed. Install with: pip install wandb")
+        return None
 
 class Trainer:
     """
@@ -49,12 +69,11 @@ class Trainer:
         
         logger.info(f"Initializing Trainer on {self.device}")
         
-        # 1. Initialize Tokenizer (Required for Dataloader)
+        # 1. Tokenizer (required for DataLoader)
         logger.info("Initializing Tokenizer...")
         self.tokenizer = WhisperTokenizer(model="openai/whisper-small", language="vi")
-        
+
         # 2. Data Loaders
-        # Support separate train/val manifests if available in config
         logger.info("Building DataLoaders...")
         self.train_loader = build_dataloader(config, tokenizer=self.tokenizer, mode='train')
         self.val_loader = build_dataloader(config, tokenizer=self.tokenizer, mode='val')
@@ -71,14 +90,24 @@ class Trainer:
             weight_decay=float(config['training'].get('weight_decay', 0.01))
         )
         
-        # Adaptive Learning Rate Scheduler (Resume + Warmup logic handled by ReduceLROnPlateau mainly)
-        # Using 'min' mode because we want to minimize WER/Loss
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        # Warmup + Adaptive LR via ChainedScheduler
+        # LinearLR ramps up LR during warmup_steps; ReduceLROnPlateau kicks in after
+        warmup_steps = config['training'].get('warmup_steps', 1000)
+        warmup_scheduler = optim.lr_scheduler.LinearLR(
+            self.optimizer,
+            start_factor=1e-4,      # start at 0.01% of base LR
+            end_factor=1.0,
+            total_iters=warmup_steps
+        )
+        plateau_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode='min',
             factor=0.5,
             patience=3,
             min_lr=float(config['training'].get('min_lr', 1e-6))
+        )
+        self.scheduler = optim.lr_scheduler.ChainedScheduler(
+            [warmup_scheduler, plateau_scheduler]
         )
         
         # 4. Loss Function & Metrics
@@ -90,23 +119,28 @@ class Trainer:
         
         # Mixed Precision
         self.use_amp = config['training'].get('use_amp', False)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
-        
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+
         # Training State
         self.start_epoch = 0
         self.step = 0
-        self.best_metric = float('inf') # Using WER as primary metric
-        
-        # Load Pretrained / Resume
+        self.best_metric = float('inf')
+
         # Load Pretrained / Resume
         if config['training'].get('pretrained_path'):
             self._load_checkpoint(config['training']['pretrained_path'])
-            
-        # 5. Validation Tools (Phase 0.8.3)
+
+        # 5. Validation Tools
         self.metric_calc = MetricCalculator()
-        self.tokenizer = self.train_loader.dataset.tokenizer # Get tokenizer from dataset
+        self.tokenizer = self.train_loader.dataset.tokenizer
         blank_id = config['model'].get('blank_id', 50257)
         self.decoder = CTCDecoder(self.tokenizer, blank_id=blank_id)
+
+        # 6. WandB (lazy — only if use_wandb: true in config)
+        self.wandb = _get_wandb_logger(config)
+        if self.wandb:
+            logger.info(f"WandB enabled: {self.wandb.run.url}")
+
 
     def _load_checkpoint(self, path: str):
         """
@@ -195,28 +229,16 @@ class Trainer:
         
         # Training Configs
         accum_steps = self.config['training'].get('accum_steps', 1)
-        warmup_steps = self.config['training'].get('warmup_steps', 1000)
-        base_lr = float(self.config['training']['learning_rate'])
+        assert accum_steps > 0, f"accum_steps must be > 0, got {accum_steps}"
         
         # 0.9.5 Fix: Ensure gradients are zeroed before loop starts
         self.optimizer.zero_grad()
         
         pbar = tqdm(self.train_loader, desc=f"Train E{epoch}")
+        grad_norm = 0.0  # Always defined for consistent tqdm postfix
         for batch_idx, batch in enumerate(pbar):
             self.step += 1
-            
-            # --- Warmup Logic (Fix 0.9.2) ---
-            # Linear Warmup: LR = Base * (Step / Warmup)
-            # Only applies if step < warmup AND we are in early phase
-            # But simple check is global step
-            # We need global_step tracking across epochs. self.step is global?
-            # self.step += 1 is accumulated. Yes.
-            if self.step <= warmup_steps:
-                 warmup_factor = self.step / float(warmup_steps)
-                 current_lr = base_lr * warmup_factor
-                 for param_group in self.optimizer.param_groups:
-                     param_group['lr'] = current_lr
-            
+
             # Move data to device
             # Ensure collate_fn produces this structure
             audio = batch['audio'].to(self.device)
@@ -226,15 +248,12 @@ class Trainer:
             if target_mask is not None:
                 target_mask = target_mask.to(self.device)
             
-            if target_mask is not None:
-                target_mask = target_mask.to(self.device)
-            
             # Zero Gradients handled at step boundary now (Moved to after step in 0.9.5)
             # if (batch_idx % accum_steps) == 0:
             #      self.optimizer.zero_grad()
             
             # Forward & Loss (with Mixed Precision)
-            with torch.cuda.amp.autocast(enabled=self.use_amp):
+            with torch.amp.autocast('cuda', enabled=self.use_amp):
                 # E2E Support: forward() handles raw/features internally
                 outputs = self.model(audio, visual, targets)
                 
@@ -287,17 +306,11 @@ class Trainer:
             
             # Log Norm (0.9.5)
             postfix = {'loss': f"{meter.avg:.4f}", 'lr': f"{get_lr(self.optimizer):.2e}"}
-            if 'grad_norm' in locals():
+            if grad_norm > 0:
                  postfix['norm'] = f"{grad_norm:.2f}"
             pbar.set_postfix(postfix)
             
         return {'loss': meter.avg}
-
-        return {
-            'loss': loss_meter.avg,
-            'wer': wer_meter.avg,
-            'cer': cer_meter.avg
-        }
 
     def validate_epoch(self, epoch: int) -> Dict[str, float]:
         self.model.eval()
