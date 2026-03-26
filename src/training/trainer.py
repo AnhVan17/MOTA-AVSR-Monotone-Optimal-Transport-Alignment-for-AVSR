@@ -1,11 +1,8 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
-from typing import Dict, Optional, List
+from typing import Dict
 from pathlib import Path
 from tqdm import tqdm
-import math
 
 # Project Modules
 from src.models.mota import create_model
@@ -16,15 +13,39 @@ from src.evaluation.metrics import MetricCalculator
 from src.evaluation.decoding import CTCDecoder
 from src.utils.logging_utils import setup_logger
 from src.utils.common import (
-    AverageMeter, 
-    save_checkpoint, 
-    load_checkpoint, 
+    AverageMeter,
+    save_checkpoint,
+    load_checkpoint,
     get_lr,
     EarlyStopping
 )
 
 # Initialize Logger
 logger = setup_logger(__name__)
+
+_wandb_logger = None  # Lazy init
+
+
+def _get_wandb_logger(config: Dict):
+    """Lazy WandB init — only when use_wandb: true in config."""
+    global _wandb_logger
+    if _wandb_logger is not None:
+        return _wandb_logger
+
+    if not config.get('logging', {}).get('use_wandb', False):
+        return None
+
+    try:
+        from src.utils.wandb_logger import WandbLogger
+        _wandb_logger = WandbLogger(
+            project=config['logging'].get('wandb_project', 'mota-avsr'),
+            name=config['logging'].get('wandb_name', None),
+            config=config,
+        )
+        return _wandb_logger
+    except ImportError:
+        logger.warning("wandb not installed. Install with: pip install wandb")
+        return None
 
 class Trainer:
     """
@@ -98,23 +119,28 @@ class Trainer:
         
         # Mixed Precision
         self.use_amp = config['training'].get('use_amp', False)
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
-        
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+
         # Training State
         self.start_epoch = 0
         self.step = 0
-        self.best_metric = float('inf') # Using WER as primary metric
-        
-        # Load Pretrained / Resume
+        self.best_metric = float('inf')
+
         # Load Pretrained / Resume
         if config['training'].get('pretrained_path'):
             self._load_checkpoint(config['training']['pretrained_path'])
-            
-        # 5. Validation Tools (Phase 0.8.3)
+
+        # 5. Validation Tools
         self.metric_calc = MetricCalculator()
-        self.tokenizer = self.train_loader.dataset.tokenizer # Get tokenizer from dataset
+        self.tokenizer = self.train_loader.dataset.tokenizer
         blank_id = config['model'].get('blank_id', 50257)
         self.decoder = CTCDecoder(self.tokenizer, blank_id=blank_id)
+
+        # 6. WandB (lazy — only if use_wandb: true in config)
+        self.wandb = _get_wandb_logger(config)
+        if self.wandb:
+            logger.info(f"WandB enabled: {self.wandb.run.url}")
+
 
     def _load_checkpoint(self, path: str):
         """
@@ -227,7 +253,7 @@ class Trainer:
             #      self.optimizer.zero_grad()
             
             # Forward & Loss (with Mixed Precision)
-            with torch.cuda.amp.autocast(enabled=self.use_amp):
+            with torch.amp.autocast('cuda', enabled=self.use_amp):
                 # E2E Support: forward() handles raw/features internally
                 outputs = self.model(audio, visual, targets)
                 
