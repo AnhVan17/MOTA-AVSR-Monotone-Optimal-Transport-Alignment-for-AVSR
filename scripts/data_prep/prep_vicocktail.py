@@ -6,7 +6,7 @@ from pathlib import Path
 # Suppress MediaPipe EGL Error Logs (Noisy in Headless)
 os.environ["GLOG_minloglevel"] = "2"
 
-from modal import App, Image, Volume, method
+from modal import App, Image, Volume
 
 # --- Config ---
 APP_NAME = "avsr-prep-vicocktail"
