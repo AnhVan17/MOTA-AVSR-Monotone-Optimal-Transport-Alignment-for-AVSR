@@ -4,10 +4,10 @@ Volume Inspector for Modal.com
 Kiểm tra chi tiết cấu trúc và dữ liệu trên Modal Volume.
 
 Usage:
-    modal run scripts/modal/check_volume.py
-    modal run scripts/modal/check_volume.py --path /mnt/data/grid
-    modal run scripts/modal/check_volume.py --detailed
-    modal run scripts/modal/check_volume.py --sample-pt
+    modal run scripts/utils/check_volume.py
+    modal run scripts/utils/check_volume.py --path /mnt/data/grid
+    modal run scripts/utils/check_volume.py --detailed
+    modal run scripts/utils/check_volume.py --sample-pt
 """
 
 import modal
