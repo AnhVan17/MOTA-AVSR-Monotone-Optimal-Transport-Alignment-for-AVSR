@@ -15,9 +15,9 @@ OUTPUT_ROOT = "/mnt/vicocktail_cropped"
 # Lightweight image for CPU-only processing
 image = (
     modal.Image.debian_slim(python_version="3.10")
-    .apt_install("ffmpeg", "libgl1-mesa-glx") # System libs for OpenCV/MediaPipe
+    .apt_install("ffmpeg", "libgl1-mesa-glx") # System libs for OpenCV
     .pip_install(
-        "mediapipe==0.10.9", # Cpu-stable version
+        "face-alignment>=1.4.0",  # GPU-native face detection
         "opencv-python-headless",
         "numpy<2",
         "tqdm",
@@ -72,7 +72,8 @@ def process_video_task(args):
 @app.function(
     image=image,
     volumes={"/mnt": volume},
-    cpu=8,             # Request high CPU cores
+    gpu="T4",          # Face-alignment REQUIRES a GPU to be fast
+    cpu=4,             # Base CPU for loading videos
     timeout=7200,      # 2 hours
     memory=16384       # 16GB RAM for parallel workers
 )
@@ -135,7 +136,7 @@ def process_shard(tar_path):
     # 5. Parallel Execution
     print(f"Processing with Pool...")
     success_count = 0
-    with ProcessPoolExecutor(max_workers=6) as executor:
+    with ProcessPoolExecutor(max_workers=4) as executor:
         results = list(tqdm(
             executor.map(process_video_task, task_args),
             total=len(video_files)

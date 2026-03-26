@@ -1,7 +1,13 @@
 import cv2
 import numpy as np
-import mediapipe as mp
 import os
+import face_alignment
+import torch
+import warnings
+
+# Suppress face-alignment warnings about no faces detected (floods terminal on bad frames)
+warnings.filterwarnings("ignore", message="No faces were detected.")
+
 # Standalone logger setup to avoid importing 'src.utils' which triggers 'torch' import
 def setup_logger(name):
     import logging
@@ -26,46 +32,37 @@ class FaceMeshConfig:
 
 class FaceMeshPreprocessor:
     """
-    Dedicated FaceMesh Processor for CPU-based encoding.
+    Dedicated Face Landmark Processor using face-alignment (GPU-native).
     Designed to be run as a Singleton or with minimal re-initialization.
     """
     _instance = None
-    _face_mesh = None
+    _fa = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super(FaceMeshPreprocessor, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self):
-        # Ensure FaceMesh is initialized only once
-        if FaceMeshPreprocessor._face_mesh is None:
-            self._init_facemesh()
+    def __init__(self, device=None):
+        # Ensure face-alignment is initialized only once
+        if FaceMeshPreprocessor._fa is None:
+            self._init_face_alignment(device)
 
-    def _init_facemesh(self):
+    def _init_face_alignment(self, device=None):
         """
-        Initialize MediaPipe FaceMesh on CPU.
+        Initialize face-alignment on GPU (or CPU fallback).
         """
-        logger.info("Initializing MediaPipe FaceMesh (CPU Mode)...")
+        device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
+        logger.info(f"Initializing face-alignment on {device}...")
         
-        # Force CPU to avoid EGL/GPU conflicts
-        original_cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
-        try:
-            os.environ["CUDA_VISIBLE_DEVICES"] = ""
-            FaceMeshPreprocessor._face_mesh = mp.solutions.face_mesh.FaceMesh(
-                static_image_mode=False,
-                max_num_faces=1,
-                refine_landmarks=True,
-                min_detection_confidence=0.3, # Lower threshold for wild videos
-                min_tracking_confidence=0.3
-            )
-        finally:
-             if original_cuda is not None:
-                os.environ["CUDA_VISIBLE_DEVICES"] = original_cuda
-             else:
-                del os.environ["CUDA_VISIBLE_DEVICES"]
+        FaceMeshPreprocessor._fa = face_alignment.FaceAlignment(
+            face_alignment.LandmarksType.TWO_D,
+            device=device,
+            flip_input=False,
+            face_detector='sfd'
+        )
         
-        logger.info("FaceMesh Initialized Successfully.")
+        logger.info("face-alignment initialized successfully.")
 
     def process_video(self, video_path, output_path=None):
         """
@@ -93,7 +90,7 @@ class FaceMeshPreprocessor:
         prev_bbox = None
         
         for i, frame in enumerate(frames):
-            # Optimization: Detect every 5 frames to speed up CPU processing
+            # Optimization: Detect every 5 frames to reduce GPU calls
             if i % 5 == 0 or prev_bbox is None:
                 crop, prev_bbox = self._extract_mouth(frame, None)
             else:
@@ -114,7 +111,7 @@ class FaceMeshPreprocessor:
             return cropped_frames
 
     def _extract_mouth(self, frame, prev_bbox):
-        """Core landmarks logic."""
+        """Core mouth detection using face-alignment 68-point landmarks."""
         h, w = frame.shape[:2]
         
         if prev_bbox:
@@ -123,17 +120,16 @@ class FaceMeshPreprocessor:
                 return frame[y1:y2, x1:x2], prev_bbox
 
         try:
-            # MediaPipe needs RGB
+            # face-alignment accepts RGB
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = FaceMeshPreprocessor._face_mesh.process(rgb)
+            landmarks = FaceMeshPreprocessor._fa.get_landmarks_from_image(rgb)
             
-            if results.multi_face_landmarks:
-                lm = results.multi_face_landmarks[0].landmark
-                # Mouth Indices (mp.solutions.face_mesh.FACEMESH_LIPS is complex, using manual)
-                mouth_idx = [13, 14, 61, 291, 78, 308, 324, 17] 
+            if landmarks is not None and len(landmarks) > 0:
+                # 68-point landmarks: mouth = [48:68] (20 points)
+                mouth_points = landmarks[0][48:68]
                 
-                xs = [lm[i].x * w for i in mouth_idx]
-                ys = [lm[i].y * h for i in mouth_idx]
+                xs = mouth_points[:, 0]
+                ys = mouth_points[:, 1]
                 
                 cx, cy = int(np.mean(xs)), int(np.mean(ys))
                 
