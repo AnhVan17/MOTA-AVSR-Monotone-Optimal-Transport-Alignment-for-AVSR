@@ -58,22 +58,38 @@ def load_checkpoint(
     checkpoint_path: str,
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer = None,
-    scheduler: Any = None
+    scheduler: Any = None,
+    device: torch.device = None,
 ) -> Dict[str, Any]:
-    """Load training checkpoint"""
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
+    """
+    Load training checkpoint with device auto-detection.
+
+    Args:
+        checkpoint_path: Path to .pt checkpoint file
+        model: PyTorch model
+        optimizer: Optional optimizer to restore
+        scheduler: Optional scheduler to restore
+        device: Target device. If None → auto-detect (cuda if available else cpu)
+
+    Note:
+        Inference scripts: pass device='cuda' to load directly to GPU.
+        Trainer: pass self.device (already handles map_location).
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
-    
+
     if optimizer and 'optimizer_state_dict' in checkpoint:
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    
+
     if scheduler and 'scheduler_state_dict' in checkpoint and checkpoint['scheduler_state_dict']:
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    
-    logger.info(f" Checkpoint loaded from: {checkpoint_path}")
-    logger.info(f"   Epoch: {checkpoint['epoch']}, Step: {checkpoint['step']}")
-    
+
+    logger.info(f"Checkpoint loaded: {checkpoint_path} (device={device})")
+    logger.info(f"  Epoch: {checkpoint['epoch']}, Step: {checkpoint['step']}")
+
     return checkpoint
 
 

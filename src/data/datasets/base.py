@@ -142,26 +142,3 @@ class FeatureDataset(BaseDataset):
             }
 
 
-class RawVideoDataset(BaseDataset):
-    """
-    Dataset that loads raw/cropped video files.
-    Used for Phase 2 training (end-to-end, higher quality).
-    
-    NOTE: This requires on-the-fly feature extraction if not using
-    the preprocessed cropped videos.
-    """
-    
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        item = self.data[idx]
-        rel_path = item['rel_path']
-        text = item.get('text', "")
-        
-        full_path = os.path.join(self.data_root, rel_path)
-        target = self._tokenize(text)
-        
-        # TODO: Implement raw video loading with on-the-fly processing
-        # This requires VideoProcessor and AudioExtractor
-        raise NotImplementedError(
-            "Phase 2 (Raw Video) loading requires on-the-fly feature extraction. "
-            "Use FeatureDataset for Phase 1 training with precomputed .pt files."
-        )

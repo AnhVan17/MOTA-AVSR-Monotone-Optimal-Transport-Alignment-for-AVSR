@@ -5,11 +5,19 @@ from typing import List, Dict
 class Collator:
     """
     Custom collator with configurable padding ID.
+
+    Collates variable-length sequences into padded batches.
+    Returns None for empty batches (caller handles gracefully).
     """
-    def __init__(self, pad_id: int = 0):
+
+    def __init__(self, pad_id: int = 50257):
         self.pad_id = pad_id
 
     def __call__(self, batch: List[Dict]) -> Dict:
+        # Guard: empty batch from DataLoader
+        if not batch:
+            return None
+
         batch_size = len(batch)
         
         # 1. Process Audio (variable length from Whisper encoder)
