@@ -119,7 +119,7 @@ class Trainer:
         
         # Mixed Precision
         self.use_amp = config['training'].get('use_amp', False)
-        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
         # Training State
         self.start_epoch = 0
@@ -253,7 +253,7 @@ class Trainer:
             #      self.optimizer.zero_grad()
             
             # Forward & Loss (with Mixed Precision)
-            with torch.amp.autocast('cuda', enabled=self.use_amp):
+            with torch.cuda.amp.autocast(enabled=self.use_amp):
                 # E2E Support: forward() handles raw/features internally
                 outputs = self.model(audio, visual, targets)
                 

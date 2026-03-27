@@ -50,6 +50,20 @@ Thumbs.db
 
 
 # untrack folders
+docs/
 notebooks/
 
-docs/
+# Assistant Generated Docs & Logs
+BUGFIX_CUDA_ASSERT.md
+CHANGELOG_2026-01-04.md
+FIX_TRIET_DE.md
+MOTA_ARCHITECTURE.md
+OPTIMIZATION_LOG.md
+OPTIMIZATION_REPORT.md
+PREPROCESSING_USAGE.md
+QUICK_START.md
+TRAINING_STRATEGY.md
+VICOCKTAIL_MODAL_GUIDE.md
+tmp_diag.py
+*.jsonl
+*.pt

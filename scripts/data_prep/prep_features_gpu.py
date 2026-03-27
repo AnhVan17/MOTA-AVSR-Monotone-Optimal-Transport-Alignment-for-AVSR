@@ -25,7 +25,7 @@ image = (
         "timm==0.9.12",
         "webdataset==0.2.79", 
         "huggingface_hub",
-        "mediapipe==0.10.9",
+        "face-alignment>=1.4.0",
         "opencv-python-headless", # Still needed for VideoProcessor cv2
         "soundfile",
         "librosa",
@@ -47,7 +47,7 @@ volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
     volumes={"/mnt": volume},
     gpu="A100",        # Request A100 GPU
     timeout=7200,      # 2 hours
-    cpu=2,
+    cpu=4,             # Increased from 2 to 8 to feed the A100 dataloader fast enough
     memory=16384,
     max_containers=2 # Reduced to 2 as requested (and renamed from concurrency_limit)
 )

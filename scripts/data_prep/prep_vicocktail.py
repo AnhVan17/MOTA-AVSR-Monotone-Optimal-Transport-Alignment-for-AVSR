@@ -3,8 +3,7 @@ import sys
 import os
 from pathlib import Path
 
-# Suppress MediaPipe EGL Error Logs (Noisy in Headless)
-os.environ["GLOG_minloglevel"] = "2"
+# Face detection via face-alignment (GPU-native, no EGL issues)
 
 from modal import App, Image, Volume
 
@@ -17,7 +16,7 @@ OUTPUT_ROOT = "/mnt/vicocktail_features"
 # --- Image ---
 image = (
     modal.Image.debian_slim(python_version="3.10")
-    .apt_install("git", "ffmpeg", "libgl1", "libgl1-mesa-glx", "libglib2.0-0", "libegl1", "libxext6") # ffmpeg + GL libs needed for MediaPipe
+    .apt_install("git", "ffmpeg", "libgl1", "libgl1-mesa-glx", "libglib2.0-0") # ffmpeg
     .pip_install(
         "torch==2.1.2",
         "torchaudio==2.1.2",
@@ -28,7 +27,7 @@ image = (
         "timm==0.9.12",             # Required by BasePreprocessor
         "webdataset==0.2.79",
         "huggingface_hub",
-        "mediapipe==0.10.9",        # Pin version (Latest 0.10.31 breaks mp.solutions sometimes)
+        "face-alignment>=1.4.0",   # GPU-native face detection (replaces MediaPipe)
         "opencv-python-headless",
         "soundfile",
         "librosa",
@@ -49,7 +48,7 @@ volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
     image=image,
     volumes={"/mnt": volume},
     timeout=3600, # 1 hour per shard download usually enough
-    secrets=[modal.Secret.from_name("huggingface-secret")] # Ensure HF_TOKEN is available
+    secrets=[modal.Secret.from_name("hf-token")] # Ensure HF_TOKEN is available
 )
 def download_shard_subset(subset):
     sys.path.append("/root")

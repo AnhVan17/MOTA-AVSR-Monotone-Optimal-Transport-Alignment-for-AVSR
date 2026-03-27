@@ -12,7 +12,7 @@ av>=11.0.0
 soundfile>=0.12.1
 opencv-python-headless>=4.9.0
 
-mediapipe>=0.10.9
+face-alignment>=1.4.0
 
 
 webdataset>=0.2.86
