@@ -1,6 +1,6 @@
 from transformers import WhisperTokenizer as HfWhisperTokenizer
 import torch
-from typing import List
+from typing import Any, Dict, List, Union
 from src.utils.logging_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -30,14 +30,45 @@ class WhisperTokenizer:
         self.sot_token_id = self.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
         self.eot_token_id = self.tokenizer.convert_tokens_to_ids("<|endoftranscript|>")
 
-        logger.debug(f"WhisperTokenizer initialized")
-        logger.debug(f"   Vocab size: {self.vocab_size}")
+        logger.debug("WhisperTokenizer initialized")
+        logger.debug(f"   Vocab size (total): {self.vocab_size}")
+        logger.debug(f"   Model vocab size (base merges): {self.model_vocab_size}")
         logger.debug(f"   Language: {language}")
         logger.debug(f"   Model: {model}")
 
     @property
-    def vocab_size(self):
+    def vocab_size(self) -> int:
+        """Total tokenizer size (includes added/special tokens)."""
+        return len(self.tokenizer)
+
+    @property
+    def model_vocab_size(self) -> int:
+        """Base model vocab size reported by HuggingFace tokenizer."""
         return self.tokenizer.vocab_size
+
+    @property
+    def max_token_id(self) -> int:
+        """Maximum token id present in tokenizer vocabulary."""
+        vocab = self.tokenizer.get_vocab()
+        return max(vocab.values()) if vocab else -1
+
+    @property
+    def total_token_count(self) -> int:
+        """Alias for vocab_size for readability in scripts."""
+        return self.vocab_size
+
+    def vocab_info(self) -> Dict[str, Any]:
+        """Return structured vocabulary stats used by debug/verification scripts."""
+        return {
+            "vocab_size": self.vocab_size,
+            "model_vocab_size": self.model_vocab_size,
+            "max_token_id": self.max_token_id,
+            "eot_token_id": self.eot_token_id,
+            "sot_token_id": self.sot_token_id,
+            "pad_token_id": self.pad_token_id,
+            "language": self.language,
+            "model": self.model,
+        }
 
     def encode(
         self,
@@ -52,7 +83,7 @@ class WhisperTokenizer:
 
     def decode(
         self,
-        ids,
+        ids: Union[List[int], torch.Tensor],
         skip_special_tokens: bool = True
     ) -> str:
         """Decode single sequence of token IDs to text"""
@@ -71,10 +102,10 @@ class WhisperTokenizer:
             skip_special_tokens=skip_special_tokens
         )
 
-    def get_vocab(self) -> dict:
+    def get_vocab(self) -> Dict[str, int]:
         return self.tokenizer.get_vocab()
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.vocab_size
 
     def __repr__(self):
