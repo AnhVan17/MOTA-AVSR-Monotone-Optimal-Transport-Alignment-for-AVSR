@@ -68,18 +68,18 @@ Dự án xây dựng hệ thống **AVSR (Audio-Visual Speech Recognition)** cho
 
 ## 2. Điểm mạnh
 
-| Aspect | Đánh giá |
-|---|---|
-| **Modular hoá** | Tách đúng `preprocessors / datasets / models / training` — dễ mở rộng |
-| **Config inheritance** | [config_utils.py:5-46](../src/utils/config_utils.py#L5-L46) hỗ trợ `defaults: [base]` rất gọn |
-| **MQOT v2** | Unbalanced Sinkhorn + learnable epsilon + multi-head OT — đúng SOTA (PROGOT/AlignMamba) |
-| **QualityGate v2** | Cross-attention alignment + causal mask — thay nội suy cứng bằng learned alignment |
-| **Training infrastructure** | AMP + grad accumulation + early stopping + checkpoint cleanup + defensive NaN/Inf check |
-| **Vietnamese normalization** | NFC + giữ tone marks, đúng cho tiếng Việt |
-| **Documentation** | README + ALGORITHM_SYSTEM_OVERVIEW + ADDING_NEW_DATASET viết chi tiết |
-| **GPU-native preprocessing** | Đã migrate từ MediaPipe (CPU/EGL conflict) sang face-alignment |
-| **Tokenizer abstraction** | Wrapper rõ ràng quanh HF WhisperTokenizer với property tiện lợi |
-| **Logging** | Color formatter + dual handler (console + file) |
+| Aspect                       | Đánh giá                                                                                      |
+| ---------------------------- | --------------------------------------------------------------------------------------------- |
+| **Modular hoá**              | Tách đúng `preprocessors / datasets / models / training` — dễ mở rộng                         |
+| **Config inheritance**       | [config_utils.py:5-46](../src/utils/config_utils.py#L5-L46) hỗ trợ `defaults: [base]` rất gọn |
+| **MQOT v2**                  | Unbalanced Sinkhorn + learnable epsilon + multi-head OT — đúng SOTA (PROGOT/AlignMamba)       |
+| **QualityGate v2**           | Cross-attention alignment + causal mask — thay nội suy cứng bằng learned alignment            |
+| **Training infrastructure**  | AMP + grad accumulation + early stopping + checkpoint cleanup + defensive NaN/Inf check       |
+| **Vietnamese normalization** | NFC + giữ tone marks, đúng cho tiếng Việt                                                     |
+| **Documentation**            | README + ALGORITHM_SYSTEM_OVERVIEW + ADDING_NEW_DATASET viết chi tiết                         |
+| **GPU-native preprocessing** | Đã migrate từ MediaPipe (CPU/EGL conflict) sang face-alignment                                |
+| **Tokenizer abstraction**    | Wrapper rõ ràng quanh HF WhisperTokenizer với property tiện lợi                               |
+| **Logging**                  | Color formatter + dual handler (console + file)                                               |
 
 ---
 
@@ -104,6 +104,7 @@ def forward(self, audio, video, quality):  # method 2 (line 176) — OVERRIDE!
 **Vấn đề:** Trong Python, method thứ 2 sẽ **âm thầm override** method thứ 1. Hai bản logic gần giống nhau nhưng có khác biệt nhỏ (method 1 unpack `B, Ta, D = audio.shape` rồi compute; method 2 chỉ lấy `Ta, Tv`). Người đọc code sẽ confuse và có thể edit nhầm bản không được gọi.
 
 **Fix:**
+
 - Xoá hẳn 1 bản (giữ lại method 2 vì đó là bản đang chạy).
 - Add comment giải thích logic.
 
@@ -127,11 +128,13 @@ self.scheduler.step(current_metric)
 ```
 
 **Vấn đề:**
+
 1. `ChainedScheduler.step()` **không nhận argument**, nhưng `ReduceLROnPlateau.step(metric)` **bắt buộc** nhận metric.
 2. `ReduceLROnPlateau` không phải subclass của `_LRScheduler`, không thể combine trong `ChainedScheduler` (PyTorch sẽ raise `TypeError` hoặc behavior không xác định).
 3. Cuối epoch, `self.scheduler.step(current_metric)` sẽ crash hoặc plateau scheduler không nhận đúng metric.
 
 **Fix:**
+
 ```python
 # Tách quản lý
 self.warmup_scheduler = optim.lr_scheduler.LinearLR(...)
@@ -156,11 +159,13 @@ Hoặc dùng `SequentialLR` với warmup và `CosineAnnealingLR` (không cần m
 **File:** [src/models/fusion/mqot.py:174](../src/models/fusion/mqot.py#L174) ↔ [src/training/losses.py:188-204](../src/training/losses.py#L188-L204)
 
 `MQOTLayer.forward` trả về:
+
 ```python
 return P  # shape [B, H, Ta, Tv] — multi-head OT
 ```
 
 Nhưng `HybridLoss.quality_loss` xử lý như tensor 3-D:
+
 ```python
 P_col = F.normalize(transport_map, p=1, dim=1) + 1e-8  # dim=1 = head axis cho 4-D!
 entropy = -torch.sum(P_col * torch.log(P_col), dim=1)
@@ -168,11 +173,13 @@ max_ent = torch.log(torch.tensor(transport_map.size(1), ...))  # = log(H), KHÔN
 ```
 
 **Vấn đề:**
+
 - Khi `num_heads >= 1`, `dim=1` là head axis, không phải audio axis.
 - `transport_map.size(1)` = `H` (số heads), không phải `Ta` (số audio frames).
 - Entropy/sharpness tính sai hoàn toàn → loss vô nghĩa.
 
 **Fix:**
+
 ```python
 # Squeeze head dim nếu H=1, hoặc mean across heads
 if transport_map.dim() == 4:
@@ -196,11 +203,13 @@ fused = fused + F.sigmoid(self.residual_gate) * fused
 ```
 
 **Vấn đề:**
+
 - Đây **không phải** residual connection. Tương đương `fused * (1 + sigmoid(g))`, chỉ là scaling.
 - Comment "Residual gate (zero-init — identity at start)" sai: zero-init `g=0` ⇒ `sigmoid(0)=0.5` ⇒ output = `1.5 * fused`, **không phải identity**.
 - Mất pathway từ input gốc.
 
 **Fix (residual đúng):**
+
 ```python
 # Option 1: Convex combination
 g = F.sigmoid(self.residual_gate)
@@ -223,7 +232,7 @@ fused = audio_feat + F.sigmoid(self.residual_gate) * fused
 
 ```yaml
 vocab_size: 51865
-blank_id: 50257  # EOT token for Whisper
+blank_id: 50257 # EOT token for Whisper
 ```
 
 ```python
@@ -231,6 +240,7 @@ def __init__(self, ..., pad_id: int = 50257, blank_id: int = 50257):
 ```
 
 **Vấn đề:**
+
 - CTC blank và padding token cùng giá trị 50257 (Whisper EOT).
 - Logic filter trong loss filter cùng lúc cả blank và pad ⇒ chồng chéo:
   ```python
@@ -239,11 +249,12 @@ def __init__(self, ..., pad_id: int = 50257, blank_id: int = 50257):
 - CTCDecoder `greedy_decode` filter blank cũng filter luôn EOT ⇒ không thể phân biệt "kết thúc câu" vs "blank".
 
 **Fix:**
+
 - Tách `blank_id` riêng:
   ```yaml
-  vocab_size: 51866  # +1 cho blank
-  blank_id: 51865    # slot riêng cuối vocab
-  pad_id: 50257      # giữ EOT cho pad
+  vocab_size: 51866 # +1 cho blank
+  blank_id: 51865 # slot riêng cuối vocab
+  pad_id: 50257 # giữ EOT cho pad
   ```
 - Cần expand embedding/output layer thêm 1 slot cho blank.
 
@@ -263,6 +274,7 @@ with torch.cuda.amp.autocast(enabled=self.use_amp):           # deprecated
 ```
 
 **Fix (PyTorch ≥ 2.0):**
+
 ```python
 self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
 with torch.amp.autocast('cuda', enabled=self.use_amp):
@@ -324,6 +336,7 @@ def __init__(self, ..., model: str = "openai/whisper-tiny", ...):
 ```
 
 Default `whisper-tiny` (384-dim) nhưng:
+
 - Trainer gọi `whisper-small` (768-dim).
 - Preprocessor gọi `whisper-small`.
 - Inference script gọi `whisper-small`.
@@ -350,11 +363,13 @@ except Exception as e:
 ```
 
 **Vấn đề:**
+
 - Hardcoded shape có thể không match.
 - Sample rác âm thầm trộn vào training, gây bias.
 - Không có cảnh báo metric.
 
 **Fix:**
+
 ```python
 except Exception as e:
     logger.error(f"Error loading {full_path}: {e}")
@@ -420,6 +435,7 @@ causal_mask = self.causal_mask[:L, :L]  # crash nếu L > 512
 ```
 
 **Fix:** Add assertion hoặc dynamic resize:
+
 ```python
 assert L <= self.causal_mask.size(0), f"Target len {L} > max_len {self.causal_mask.size(0)}"
 ```
@@ -439,6 +455,7 @@ fused = fused_coarse + self.fine_align_gate * self.downsample(fused_fine)
 Gate chưa qua `sigmoid` → có thể âm hoặc rất lớn, không bounded `[0,1]` như comment ngụ ý.
 
 **Fix:**
+
 ```python
 fused = fused_coarse + F.sigmoid(self.fine_align_gate) * self.downsample(fused_fine)
 ```
@@ -447,18 +464,18 @@ fused = fused_coarse + F.sigmoid(self.fine_align_gate) * self.downsample(fused_f
 
 ## 5. Vấn đề thiết kế / phong cách
 
-| File | Vấn đề | Đề xuất |
-|---|---|---|
-| [src/data/preprocessors/base.py:13-14](../src/data/preprocessors/base.py#L13-L14) | Import `DataLoader, Dataset` lặp 2 lần | Xoá dòng trùng |
-| [src/data/preprocessors/base.py:124-158](../src/data/preprocessors/base.py#L124-L158) | `_loop_pad_video` có 20 dòng comment confusion về shape | Xoá comment, viết unit test |
-| [src/training/losses.py:117-138](../src/training/losses.py#L117-L138) | Loop Python build CTC targets per-sample (O(B) per batch) | Vectorize với scatter/index |
-| [src/data/collate.py:28-32](../src/data/collate.py#L28-L32) | Build mask bằng Python loop | `mask = torch.arange(max_len)[None, :] < lengths[:, None]` |
-| [src/evaluation/decoding.py:48-149](../src/evaluation/decoding.py#L48-L149) | Beam search Python pure — rất chậm | Dùng `torchaudio.models.decoder` hoặc `pyctcdecode` |
-| [src/training/trainer.py](../src/training/trainer.py) | Trainer 370 dòng, làm quá nhiều việc | Tách `_train_step`, `_validate_step`, `_setup_*` |
-| [src/models/mota.py:256](../src/models/mota.py#L256) | `'quality' in locals()` — anti-pattern | Track explicit với `quality = None` ban đầu |
-| [scripts/data_prep/prep_vicocktail.py](../scripts/data_prep/prep_vicocktail.py) & [prep_features_gpu.py](../scripts/data_prep/prep_features_gpu.py) | Định nghĩa `FileSystemPreprocessor` cùng tên 2 lần (copy-paste) | Move lên `src/data/preprocessors/filesystem.py` |
-| [scripts/data_prep/preprocess.py:9-19](../scripts/data_prep/preprocess.py#L9-L19) | Đánh dấu DEPRECATED nhưng README còn hướng dẫn dùng | Xoá file hoặc xoá khỏi README |
-| [src/utils/__init__.py](../src/utils/__init__.py) | Re-export đầy đủ từ utils, nhưng các module đều import trực tiếp `src.utils.X` | Bỏ re-export hoặc dùng nhất quán |
+| File                                                                                                                                                | Vấn đề                                                                         | Đề xuất                                                    |
+| --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| [src/data/preprocessors/base.py:13-14](../src/data/preprocessors/base.py#L13-L14)                                                                   | Import `DataLoader, Dataset` lặp 2 lần                                         | Xoá dòng trùng                                             |
+| [src/data/preprocessors/base.py:124-158](../src/data/preprocessors/base.py#L124-L158)                                                               | `_loop_pad_video` có 20 dòng comment confusion về shape                        | Xoá comment, viết unit test                                |
+| [src/training/losses.py:117-138](../src/training/losses.py#L117-L138)                                                                               | Loop Python build CTC targets per-sample (O(B) per batch)                      | Vectorize với scatter/index                                |
+| [src/data/collate.py:28-32](../src/data/collate.py#L28-L32)                                                                                         | Build mask bằng Python loop                                                    | `mask = torch.arange(max_len)[None, :] < lengths[:, None]` |
+| [src/evaluation/decoding.py:48-149](../src/evaluation/decoding.py#L48-L149)                                                                         | Beam search Python pure — rất chậm                                             | Dùng `torchaudio.models.decoder` hoặc `pyctcdecode`        |
+| [src/training/trainer.py](../src/training/trainer.py)                                                                                               | Trainer 370 dòng, làm quá nhiều việc                                           | Tách `_train_step`, `_validate_step`, `_setup_*`           |
+| [src/models/mota.py:256](../src/models/mota.py#L256)                                                                                                | `'quality' in locals()` — anti-pattern                                         | Track explicit với `quality = None` ban đầu                |
+| [scripts/data_prep/prep_vicocktail.py](../scripts/data_prep/prep_vicocktail.py) & [prep_features_gpu.py](../scripts/data_prep/prep_features_gpu.py) | Định nghĩa `FileSystemPreprocessor` cùng tên 2 lần (copy-paste)                | Move lên `src/data/preprocessors/filesystem.py`            |
+| [scripts/data_prep/preprocess.py:9-19](../scripts/data_prep/preprocess.py#L9-L19)                                                                   | Đánh dấu DEPRECATED nhưng README còn hướng dẫn dùng                            | Xoá file hoặc xoá khỏi README                              |
+| [src/utils/**init**.py](../src/utils/__init__.py)                                                                                                   | Re-export đầy đủ từ utils, nhưng các module đều import trực tiếp `src.utils.X` | Bỏ re-export hoặc dùng nhất quán                           |
 
 ### Type hints không nhất quán
 
@@ -483,17 +500,17 @@ Nhiều file mix tiếng Việt + tiếng Anh trong cùng docstring (vd. [qualit
 
 > Theo `~/.claude/rules/python/` (PEP 8, type hints, testing, security)
 
-| Rule | Trạng thái | Ghi chú |
-|---|---|---|
-| PEP 8 formatting | ✅ Phần lớn OK | Black/isort đã trong requirements nhưng chưa chạy CI |
-| Type hints trên function signatures | ⚠️ Một phần | Nhiều `dict = None` thay vì `Optional[Dict]` |
-| Docstring | ⚠️ Trộn lẫn | VN + EN trong cùng file |
-| **Test coverage 80%+** | ❌ **Không có tests** | Không có thư mục `tests/` dù `pytest` đã có trong requirements |
-| `print()` vs `logging` | ⚠️ | [lr_finder.py](../scripts/training/lr_finder.py), [inference_phase1.py](../scripts/inference/inference_phase1.py), [download_vicocktail.py](../scripts/data_prep/download_vicocktail.py) dùng `print()` |
-| Immutability | ✅ | Tensor ops đa số create new; collator build dict mutable nhưng chấp nhận |
-| Error handling | ⚠️ | Quá nhiều `except Exception: pass` — silent swallow |
-| Secret management | ✅ | Dùng `modal.Secret.from_name("hf-token")` |
-| Input validation | ⚠️ | Chỉ guard ở 1 vài chỗ (collator empty batch); không có schema validation cho config |
+| Rule                                | Trạng thái            | Ghi chú                                                                                                                                                                                                 |
+| ----------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PEP 8 formatting                    | ✅ Phần lớn OK        | Black/isort đã trong requirements nhưng chưa chạy CI                                                                                                                                                    |
+| Type hints trên function signatures | ⚠️ Một phần           | Nhiều `dict = None` thay vì `Optional[Dict]`                                                                                                                                                            |
+| Docstring                           | ⚠️ Trộn lẫn           | VN + EN trong cùng file                                                                                                                                                                                 |
+| **Test coverage 80%+**              | ❌ **Không có tests** | Không có thư mục `tests/` dù `pytest` đã có trong requirements                                                                                                                                          |
+| `print()` vs `logging`              | ⚠️                    | [lr_finder.py](../scripts/training/lr_finder.py), [inference_phase1.py](../scripts/inference/inference_phase1.py), [download_vicocktail.py](../scripts/data_prep/download_vicocktail.py) dùng `print()` |
+| Immutability                        | ✅                    | Tensor ops đa số create new; collator build dict mutable nhưng chấp nhận                                                                                                                                |
+| Error handling                      | ⚠️                    | Quá nhiều `except Exception: pass` — silent swallow                                                                                                                                                     |
+| Secret management                   | ✅                    | Dùng `modal.Secret.from_name("hf-token")`                                                                                                                                                               |
+| Input validation                    | ⚠️                    | Chỉ guard ở 1 vài chỗ (collator empty batch); không có schema validation cho config                                                                                                                     |
 
 ### Đề xuất bổ sung
 
@@ -561,24 +578,24 @@ Codebase có **kiến trúc tốt, ý tưởng đúng SOTA** (Unbalanced OT, Cro
 
 ### Roadmap khắc phục đề xuất
 
-| Tuần | Tasks |
-|---|---|
-| Tuần 1 | Fix 3 critical bugs (3.1, 3.2, 3.3) + smoke test Phase 1 |
+| Tuần   | Tasks                                                              |
+| ------ | ------------------------------------------------------------------ |
+| Tuần 1 | Fix 3 critical bugs (3.1, 3.2, 3.3) + smoke test Phase 1           |
 | Tuần 2 | Fix 4 HIGH bugs (3.4, 3.5, 4.6, 4.10) + thêm unit tests cho models |
-| Tuần 3 | CI setup + refactor preprocessor + migrate AMP API |
-| Tuần 4 | Cosmetic + sync docs + cleanup deprecated files |
+| Tuần 3 | CI setup + refactor preprocessor + migrate AMP API                 |
+| Tuần 4 | Cosmetic + sync docs + cleanup deprecated files                    |
 
 ### Score Card
 
-| Hạng mục | Điểm | Ghi chú |
-|---|---|---|
-| Architecture | 8/10 | SOTA design, modular |
-| Code correctness | 5/10 | Critical bugs cần fix |
-| Code quality | 6/10 | Type hints không nhất quán, no tests |
-| Documentation | 9/10 | README + guides đầy đủ |
-| Infrastructure | 8/10 | Modal pipeline tốt, CI thiếu |
-| Maintainability | 5/10 | No tests, copy-paste code |
-| **Tổng** | **6.8/10** | Cần fix critical bugs + add tests |
+| Hạng mục         | Điểm       | Ghi chú                              |
+| ---------------- | ---------- | ------------------------------------ |
+| Architecture     | 8/10       | SOTA design, modular                 |
+| Code correctness | 5/10       | Critical bugs cần fix                |
+| Code quality     | 6/10       | Type hints không nhất quán, no tests |
+| Documentation    | 9/10       | README + guides đầy đủ               |
+| Infrastructure   | 8/10       | Modal pipeline tốt, CI thiếu         |
+| Maintainability  | 5/10       | No tests, copy-paste code            |
+| **Tổng**         | **6.8/10** | Cần fix critical bugs + add tests    |
 
 ---
 
