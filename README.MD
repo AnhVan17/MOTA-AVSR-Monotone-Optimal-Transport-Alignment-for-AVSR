@@ -1,6 +1,7 @@
 # MOTA: Multi-modal Optimal Transport Alignment for AVSR
 
 An Audio-Visual Speech Recognition system with two-phase training:
+
 - **Phase 1**: QualityGate for coarse fusion
 - **Phase 2**: MQOT for fine-grained alignment
 
@@ -41,14 +42,14 @@ flowchart TB
 
 ### 1.2 Data Flow
 
-| Stage | Input | Output | Tool |
-|-------|-------|--------|------|
-| Crop | Video | Mouth ROI | MediaPipe |
-| Audio | Video | Waveform | FFmpeg |
-| Audio Feat | Waveform | T x 768 | Whisper |
-| Visual Feat | Frames | T x 512 | ResNet18 |
-| Fusion | A + V | T x 256 | QualityGate |
-| Decode | Features | Logits | Conformer |
+| Stage       | Input    | Output    | Tool        |
+| ----------- | -------- | --------- | ----------- |
+| Crop        | Video    | Mouth ROI | MediaPipe   |
+| Audio       | Video    | Waveform  | FFmpeg      |
+| Audio Feat  | Waveform | T x 768   | Whisper     |
+| Visual Feat | Frames   | T x 512   | ResNet18    |
+| Fusion      | A + V    | T x 256   | QualityGate |
+| Decode      | Features | Logits    | Conformer   |
 
 ---
 
@@ -67,12 +68,12 @@ flowchart LR
 
 **Specs:**
 
-| Item | Value |
-|------|-------|
-| Model | whisper-small |
-| Input | 16kHz, 15s |
-| Mel | 80 x 3000 |
-| Output | 1500 x 768 |
+| Item   | Value         |
+| ------ | ------------- |
+| Model  | whisper-small |
+| Input  | 16kHz, 15s    |
+| Mel    | 80 x 3000     |
+| Output | 1500 x 768    |
 
 ### 2.2 ResNet18 (Visual)
 
@@ -88,11 +89,11 @@ flowchart LR
 
 **Specs:**
 
-| Item | Value |
-|------|-------|
-| Model | resnet18 |
-| Input | 88 x 88 RGB |
-| Output | 512-dim |
+| Item   | Value       |
+| ------ | ----------- |
+| Model  | resnet18    |
+| Input  | 88 x 88 RGB |
+| Output | 512-dim     |
 
 ---
 
@@ -138,6 +139,7 @@ flowchart LR
 **Landmark IDs:** 13, 14, 61, 291, 78, 308, 324, 17
 
 **Formulas:**
+
 ```
 cx = mean(x_coords)
 cy = mean(y_coords)
@@ -160,6 +162,7 @@ flowchart TB
 ```
 
 **FFmpeg Command:**
+
 ```bash
 ffmpeg -i input -ar 16000 -ac 1 -f wav pipe:1
 ```
@@ -205,11 +208,13 @@ flowchart LR
 ```
 
 **Phase 1 Config:**
+
 - use_mqot = false
 - lr = 3e-4
 - batch = 32
 
 **Phase 2 Config:**
+
 - use_mqot = true
 - lr = 1e-4
 - batch = 16
@@ -235,6 +240,7 @@ flowchart LR
 ```
 
 **Formula:**
+
 ```
 q_a = sigmoid(MLP(audio))
 q_v = sigmoid(MLP(visual))
@@ -258,11 +264,13 @@ flowchart TB
 ```
 
 **Cost Matrix:**
+
 ```
 C = -similarity + λ_time * temporal + λ_quality * quality
 ```
 
 **Params:**
+
 - λ_time = 0.5
 - λ_quality = 5.0
 - epsilon = 0.15
@@ -278,11 +286,11 @@ C = -similarity + λ_time * temporal + λ_quality * quality
 L = α * L_CTC + β * L_CE
 ```
 
-| Epoch | α | β |
-|-------|---|---|
-| 1-5 | 0.7 | 0.3 |
-| 6-15 | 0.5 | 0.5 |
-| 16+ | 0.3 | 0.7 |
+| Epoch | α   | β   |
+| ----- | --- | --- |
+| 1-5   | 0.7 | 0.3 |
+| 6-15  | 0.5 | 0.5 |
+| 16+   | 0.3 | 0.7 |
 
 ### 6.2 CTC Loss
 
@@ -373,11 +381,11 @@ modal run scripts/modal/train_phase2.py
 
 ### 8.4 Config
 
-| Param | P1 | P2 |
-|-------|----|----| 
+| Param    | P1    | P2   |
+| -------- | ----- | ---- |
 | use_mqot | false | true |
-| batch | 32 | 16 |
-| lr | 3e-4 | 1e-4 |
+| batch    | 32    | 16   |
+| lr       | 3e-4  | 1e-4 |
 
 ---
 

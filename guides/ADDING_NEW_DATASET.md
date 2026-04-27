@@ -67,12 +67,12 @@ Tài liệu này cung cấp **quy tắc và framework chung** để tích hợp 
 
 ### 1.4 Ví Dụ Phân Tích
 
-| Dataset | Cấu trúc | Video | Transcript | Đã crop? |
-|---------|----------|-------|------------|----------|
-| GRID | `speaker/video.mpg` | .mpg | .align (word timing) | ❌ |
-| LRS2 | `main/video.mp4` | .mp4 | .txt (plain) | ❌ |
-| ViCocktail | `flat/*.mp4` | .mp4 | .txt (plain) | ❌ |
-| Custom | ??? | ??? | ??? | ??? |
+| Dataset    | Cấu trúc            | Video | Transcript           | Đã crop? |
+| ---------- | ------------------- | ----- | -------------------- | -------- |
+| GRID       | `speaker/video.mpg` | .mpg  | .align (word timing) | ❌       |
+| LRS2       | `main/video.mp4`    | .mp4  | .txt (plain)         | ❌       |
+| ViCocktail | `flat/*.mp4`        | .mp4  | .txt (plain)         | ❌       |
+| Custom     | ???                 | ???   | ???                  | ???      |
 
 ---
 
@@ -91,6 +91,7 @@ Tài liệu này cung cấp **quy tắc và framework chung** để tích hợp 
 ```
 
 **Ví dụ:** Dataset tên `lrs2`
+
 ```
 /mnt/data/lrs2/
 /mnt/data/lrs2_cropped/
@@ -117,11 +118,11 @@ modal volume create avsr-dataset-volume --from-local ./data/
 
 ### 3.1 Quy Tắc Bắt Buộc
 
-| Yêu Cầu | Mô Tả |
-|---------|-------|
-| Kế thừa `BasePreprocessor` | Đảm bảo có sẵn `VideoProcessor`, `AudioExtractor` |
-| Implement `collect_metadata()` | Trả về list of dict với 4 keys bắt buộc |
-| Sử dụng `normalize_text()` | Chuẩn hóa Unicode cho transcript |
+| Yêu Cầu                        | Mô Tả                                             |
+| ------------------------------ | ------------------------------------------------- |
+| Kế thừa `BasePreprocessor`     | Đảm bảo có sẵn `VideoProcessor`, `AudioExtractor` |
+| Implement `collect_metadata()` | Trả về list of dict với 4 keys bắt buộc           |
+| Sử dụng `normalize_text()`     | Chuẩn hóa Unicode cho transcript                  |
 
 ### 3.2 Output của `collect_metadata()`
 
@@ -208,9 +209,9 @@ class YourDataset(FeatureDataset):
     def __getitem__(self, idx):
         item = self.data[idx]
         pt_path = os.path.join(self.data_root, item['rel_path'])
-        
+
         data = torch.load(pt_path)
-        
+
         # Custom mapping từ format của bạn
         return {
             'audio': data['your_audio_key'],      # Phải là [T, 768]
@@ -277,7 +278,7 @@ from .datasets.{your_dataset} import YourDataset  # ← THÊM IMPORT
 
 def build_dataloader(config, tokenizer, mode="train"):
     dataset_name = config.get('dataset_name', 'grid')
-    
+
     # ========== THÊM CASE MỚI ==========
     if dataset_name == "{your_dataset}":
         DatasetClass = YourDataset
@@ -285,7 +286,7 @@ def build_dataloader(config, tokenizer, mode="train"):
         DatasetClass = GridDataset
     else:
         raise ValueError(f"Unknown dataset: {dataset_name}")
-    
+
     dataset = DatasetClass(
         manifest_path=manifest_path,
         tokenizer=tokenizer,
@@ -313,7 +314,7 @@ model:
   use_mqot: false
 
 data:
-  dataset_name: {your_dataset}                                    # ← THAY ĐỔI
+  dataset_name: { your_dataset } # ← THAY ĐỔI
   train_manifest: /mnt/data/manifests/{your_dataset}_manifest.jsonl
   val_manifest: /mnt/data/manifests/{your_dataset}_manifest.jsonl
   data_root: /mnt/data/processed_features/{your_dataset}
@@ -334,11 +335,11 @@ loss:
 
 ### 6.2 Các Tham Số Cần Điều Chỉnh
 
-| Tham Số | Khi Nào Thay Đổi |
-|---------|------------------|
-| `batch_size` | Giảm nếu video dài, tăng nếu video ngắn |
-| `vocab_size` | Thay đổi nếu dùng tokenizer khác |
-| `learning_rate` | Giảm nếu training không ổn định |
+| Tham Số         | Khi Nào Thay Đổi                        |
+| --------------- | --------------------------------------- |
+| `batch_size`    | Giảm nếu video dài, tăng nếu video ngắn |
+| `vocab_size`    | Thay đổi nếu dùng tokenizer khác        |
+| `learning_rate` | Giảm nếu training không ổn định         |
 
 ---
 
@@ -386,17 +387,17 @@ logger = setup_logger(__name__)
 
 class YourPreprocessor(BasePreprocessor):
     """Preprocessor cho {Your Dataset Name}."""
-    
+
     def collect_metadata(self):
         logger.info(f"[{self.__class__.__name__}] Scanning {self.data_root}...")
-        
+
         # 1. Tìm video files (điều chỉnh extensions theo dataset)
         video_files = glob.glob(
-            os.path.join(self.data_root, "**", "*.mp4"), 
+            os.path.join(self.data_root, "**", "*.mp4"),
             recursive=True
         )
         logger.info(f"Found {len(video_files)} videos")
-        
+
         # 2. Build metadata
         results = []
         for video_path in video_files:
@@ -407,9 +408,9 @@ class YourPreprocessor(BasePreprocessor):
                 'rel_path': os.path.relpath(video_path, self.data_root),
                 'text': normalize_text(text)
             })
-        
+
         return results
-    
+
     def _get_transcript(self, video_path):
         """
         TODO: Implement logic đọc transcript phù hợp với dataset.
@@ -434,7 +435,7 @@ logger = setup_logger(__name__)
 
 class YourDataset(FeatureDataset):
     """Dataset cho {Your Dataset Name}."""
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         logger.debug(f"Initialized with {len(self)} samples")
@@ -444,9 +445,9 @@ class YourDataset(FeatureDataset):
 
 ## Tham Khảo
 
-| File | Mô Tả |
-|------|-------|
+| File                             | Mô Tả                                         |
+| -------------------------------- | --------------------------------------------- |
 | `src/data/preprocessors/base.py` | Base class với VideoProcessor, AudioExtractor |
-| `src/data/preprocessors/grid.py` | Ví dụ cho GRID dataset |
-| `src/data/datasets/base.py` | FeatureDataset base class |
-| `scripts/modal/preprocess.py` | Pipeline orchestration |
+| `src/data/preprocessors/grid.py` | Ví dụ cho GRID dataset                        |
+| `src/data/datasets/base.py`      | FeatureDataset base class                     |
+| `scripts/modal/preprocess.py`    | Pipeline orchestration                        |
