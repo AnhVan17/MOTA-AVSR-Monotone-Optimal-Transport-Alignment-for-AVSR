@@ -144,34 +144,6 @@ class MQOTLayer(nn.Module):
         # log_P: u[B,H,Ta] + v[B,H,Tv]
         log_P = (-cost + u.unsqueeze(3) + v.unsqueeze(2)) / eps_tensor
         return torch.exp(log_P)  # [B, H, Ta, Tv]
-
-    def forward(
-        self,
-        audio: torch.Tensor,
-        video: torch.Tensor,
-        quality: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Args:
-            audio: [B, Ta, D]
-            video: [B, Tv, D]
-            quality: [B, Tv]
-
-        Returns:
-            transport_map: [B, H, Ta, Tv] — multi-head OT plans
-                            H=1 → backward compatible với GuidedAttention
-        """
-        B, Ta, D = audio.shape
-        Tv = video.shape[1]
-        H = max(1, self.num_heads)
-
-        cost = self.compute_cost(audio, video, quality)  # [B, H, Ta, Tv]
-        P = self.sinkhorn_unbalanced(cost, Ta, Tv)      # [B, H, Ta, Tv]
-
-        # Row-normalize: P[i, :, j].sum() = 1
-        P = P / (P.sum(dim=-1, keepdim=True) + 1e-8)
-
-        return P
     
     def forward(
         self,
