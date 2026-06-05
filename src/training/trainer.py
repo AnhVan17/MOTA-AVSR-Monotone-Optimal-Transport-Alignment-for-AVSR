@@ -90,26 +90,24 @@ class Trainer:
             weight_decay=float(config['training'].get('weight_decay', 0.01))
         )
         
-        # Warmup + Adaptive LR via ChainedScheduler
-        # LinearLR ramps up LR during warmup_steps; ReduceLROnPlateau kicks in after
-        warmup_steps = config['training'].get('warmup_steps', 1000)
-        warmup_scheduler = optim.lr_scheduler.LinearLR(
+        # Warmup + Adaptive LR — quản lý 2 scheduler RIÊNG.
+        # ChainedScheduler không bọc được ReduceLROnPlateau (step() cần metric),
+        # nên warmup chạy per-step, plateau chạy per-epoch.
+        self.warmup_steps = config['training'].get('warmup_steps', 1000)
+        self.warmup_scheduler = optim.lr_scheduler.LinearLR(
             self.optimizer,
-            start_factor=1e-4,      # start at 0.01% of base LR
+            start_factor=1e-4,
             end_factor=1.0,
-            total_iters=warmup_steps
+            total_iters=self.warmup_steps
         )
-        plateau_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        self.plateau_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode='min',
             factor=0.5,
             patience=3,
             min_lr=float(config['training'].get('min_lr', 1e-6))
         )
-        self.scheduler = optim.lr_scheduler.ChainedScheduler(
-            [warmup_scheduler, plateau_scheduler]
-        )
-        
+
         # 4. Loss Function & Metrics
         self.criterion = create_loss(config).to(self.device)
         self.early_stopping = EarlyStopping(
@@ -184,7 +182,7 @@ class Trainer:
             # 3. Update Learning Rate (Adaptive)
             # Use Validation WER as the primary metric for scheduler
             current_metric = val_metrics.get('wer', val_metrics['loss'])
-            self.scheduler.step(current_metric)
+            self.plateau_scheduler.step(current_metric)
             
             # 4. Save Checkpoint
             is_best = current_metric < self.best_metric
@@ -193,7 +191,7 @@ class Trainer:
                 
             # Save latest
             save_checkpoint(
-                self.model, self.optimizer, self.scheduler,
+                self.model, self.optimizer, self.plateau_scheduler,
                 epoch, self.step, self.best_metric,
                 str(self.checkpoint_dir),
                 filename=f"epoch_{epoch}.pt"
@@ -202,7 +200,7 @@ class Trainer:
             # Save best
             if is_best:
                 save_checkpoint(
-                    self.model, self.optimizer, self.scheduler,
+                    self.model, self.optimizer, self.plateau_scheduler,
                     epoch, self.step, self.best_metric,
                     str(self.checkpoint_dir),
                     filename="best_model.pt"
@@ -296,6 +294,10 @@ class Trainer:
                 # Optimizer Step
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
+
+                # Warmup LR
+                if self.step <= self.warmup_steps:
+                    self.warmup_scheduler.step()
                 
                 # Zero Gradients (0.9.5 Fix: Clear after update)
                 self.optimizer.zero_grad()

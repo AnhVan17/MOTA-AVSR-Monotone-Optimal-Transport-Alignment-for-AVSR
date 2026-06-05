@@ -186,6 +186,9 @@ class HybridLoss(nn.Module):
         quality_loss_val = torch.tensor(0.0, device=device)
         
         if self.quality_loss_weight > 0 and transport_map is not None and mqot_quality is not None:
+            # MQOT return [B, H, Ta, Tv]. combine heads and take mean: [B, Ta, Tv] -> dim=1 for audio normalization
+            if transport_map.dim() == 4:
+                transport_map = transport_map.mean(dim=1) # [B, Ta, Tv]
             # Proxy Target: Entropy of Transport Map
             # transport_map P: [B, Ta, Tv]
             # Normalize along audio axis (how much attention each visual frame gets)
