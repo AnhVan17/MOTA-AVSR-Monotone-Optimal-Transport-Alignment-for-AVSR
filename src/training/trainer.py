@@ -109,7 +109,7 @@ class Trainer:
         )
 
         # 4. Loss Function & Metrics
-        self.criterion = create_loss(config).to(self.device)
+        self.criterion = create_loss(config, tokenizer=self.tokenizer).to(self.device)
         self.early_stopping = EarlyStopping(
             patience=config['training'].get('patience', 10), 
             mode='min'
@@ -235,6 +235,8 @@ class Trainer:
         pbar = tqdm(self.train_loader, desc=f"Train E{epoch}")
         grad_norm = 0.0  # Always defined for consistent tqdm postfix
         for batch_idx, batch in enumerate(pbar):
+            if batch is None:   # cả batch hỏng (mọi sample lỗi load) → skip
+                continue
             self.step += 1
 
             # Move data to device
@@ -324,6 +326,8 @@ class Trainer:
         
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc=f"Val E{epoch}"):
+                if batch is None:   # cả batch hỏng → skip
+                    continue
                 audio = batch['audio'].to(self.device)
                 visual = batch['visual'].to(self.device)
                 targets = batch['target'].to(self.device)
