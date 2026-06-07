@@ -132,13 +132,8 @@ class FeatureDataset(BaseDataset):
             }
         except Exception as e:
             logger.error(f"Error loading {full_path}: {e}")
-            # Return dummy data
-            return {
-                'audio': torch.zeros(300, 768),
-                'visual': torch.zeros(75, 512),
-                'target': target,
-                'text': text,
-                'rel_path': rel_path
-            }
+            # Sample hỏng → trả None (KHÔNG bịa dummy zeros với nhãn thật, sẽ đầu độc training).
+            # Collator lọc None, batch chỉ giữ sample hợp lệ.
+            return None
 
 

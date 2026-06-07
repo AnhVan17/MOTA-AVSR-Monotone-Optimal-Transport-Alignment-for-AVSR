@@ -67,8 +67,10 @@ class QualityGate(nn.Module):
             nn.Softmax(dim=-1)
         )
 
-        # --- Bước 4: Residual gate (zero-init — identity at start) ---
-        self.residual_gate = nn.Parameter(torch.zeros(1))
+        # --- Bước 4: Residual gate — convex giữa audio thuần và bản fusion ---
+        # Lưu raw = logit(0.1) vì forward bọc sigmoid → g ∈ (0,1), khởi đầu g≈0.1
+        # (tin audio ~90% lúc đầu), model tự học tăng dần độ tin fusion.
+        self.residual_gate = nn.Parameter(torch.logit(torch.tensor(0.1)))
 
     def _create_causal_mask(self, Ta: int, Tv: int, device: torch.device) -> torch.Tensor:
         """
@@ -175,8 +177,10 @@ class QualityGate(nn.Module):
             gate_weights[..., 1:2] * aligned_visual
         )
 
-        # --- Bước 4: Residual ---
-        fused = fused + F.sigmoid(self.residual_gate) * fused
+        # --- Bước 4: Residual gate — convex combination giữa audio thuần và fused ---
+        # g≈0.1 lúc đầu → giữ chủ yếu audio; model học tăng g để tin fusion nhiều hơn.
+        g = torch.sigmoid(self.residual_gate)
+        fused = (1.0 - g) * audio_feat + g * fused
 
         return {
             'fused': fused,                               # [B, T_a, D]

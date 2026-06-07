@@ -111,7 +111,7 @@ class MOTA(nn.Module):
             
             # Learnable Gate for Residual Connection (Step 0.7.1)
             # Init at 0.1 to allow gradient flow (Tuned 0.9.5: 0.01 -> 0.1)
-            self.fine_align_gate = nn.Parameter(torch.tensor(0.1))
+            self.fine_align_gate = nn.Parameter(torch.logit(torch.tensor(0.1)))
         
         # ============================================================
         # STAGE 3: CONFORMER ENCODER
@@ -226,7 +226,7 @@ class MOTA(nn.Module):
             ) # [B, Ta, 768]
             
             # 4. Residual Connection with Learnable Gate
-            fused = fused_coarse + self.fine_align_gate * self.downsample(fused_fine)
+            fused = fused_coarse + torch.sigmoid(self.fine_align_gate) * self.downsample(fused_fine)
         else:
             fused = fused_coarse
             

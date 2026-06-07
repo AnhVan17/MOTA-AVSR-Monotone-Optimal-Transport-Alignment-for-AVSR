@@ -14,7 +14,9 @@ class Collator:
         self.pad_id = pad_id
 
     def __call__(self, batch: List[Dict]) -> Dict:
-        # Guard: empty batch from DataLoader
+        # Lọc bỏ sample hỏng (None từ Dataset.__getitem__) trước khi xử lý.
+        batch = [s for s in batch if s is not None]
+        # Guard: batch rỗng (toàn bộ sample hỏng, hoặc DataLoader đưa list rỗng)
         if not batch:
             return None
 
