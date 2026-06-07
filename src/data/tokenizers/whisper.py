@@ -47,6 +47,12 @@ class WhisperTokenizer:
         return self.tokenizer.vocab_size
 
     @property
+    def all_special_ids(self) -> List[int]:
+        """ID mọi token điều khiển (SOT, lang, task, notimestamps, EOT...).
+        Dùng để lọc khỏi CTC target — generic cho mọi HF tokenizer, không hardcode."""
+        return self.tokenizer.all_special_ids
+
+    @property
     def max_token_id(self) -> int:
         """Maximum token id present in tokenizer vocabulary."""
         vocab = self.tokenizer.get_vocab()

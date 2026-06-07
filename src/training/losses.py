@@ -31,16 +31,18 @@ class HybridLoss(nn.Module):
         ce_weight: float = 0.7,
         quality_loss_weight: float = 0.1, # Weight for aux loss
         pad_id: int = 50257,
-        blank_id: int = 50257
+        blank_id: int = 50257,
+        special_ids: Optional[list] = None  # token điều khiển cần lọc khỏi CTC target
     ):
         super().__init__()
-        
+
         self.ctc_weight = ctc_weight
         self.ce_weight = ce_weight
         self.quality_loss_weight = quality_loss_weight
         self.pad_id = pad_id
         self.blank_id = blank_id
-        self.sot_id = 50258  # Whisper Start-of-Transcript token
+        self.sot_id = 50258  # Whisper Start-of-Transcript token (fallback khi không có special_ids)
+        self.special_ids = special_ids
 
         # CTC loss
         self.ctc_loss = nn.CTCLoss(
@@ -49,9 +51,11 @@ class HybridLoss(nn.Module):
             zero_infinity=True
         )
 
-        # CrossEntropy loss
+        # CrossEntropy loss — ignore theo VỊ TRÍ (target_mask → -100), không theo giá trị pad_id.
+        # Lý do: pad_id == eot_id (50257) ở Whisper; nếu ignore theo giá trị thì EOT thật cũng bị
+        # bỏ → model không học được token dừng. Mask theo vị trí giữ EOT, chỉ bỏ padding (idiom HF).
         self.ce_loss = nn.CrossEntropyLoss(
-            ignore_index=pad_id,
+            ignore_index=-100,
             reduction='mean'
         )
     
@@ -85,9 +89,19 @@ class HybridLoss(nn.Module):
         device = ctc_logits.device
         B = ctc_logits.size(0)
         
-        # Handle defaults
+        # Handle defaults — Collator thường truyền target_mask theo độ dài (gồm cả EOT).
+        # Fallback khi None: GIỮ tới (và gồm) pad_id ĐẦU TIÊN (= EOT thật), bỏ padding sau đó.
+        # Không dùng (targets != pad_id) vì pad_id == eot_id sẽ loại nhầm EOT.
         if target_mask is None:
-             target_mask = (targets != self.pad_id)
+            is_pad = (targets == self.pad_id)
+            seq_len = targets.size(1)
+            first_pad = torch.where(
+                is_pad.any(dim=1),
+                is_pad.float().argmax(dim=1),                          # vị trí EOT đầu tiên
+                torch.full((targets.size(0),), seq_len, device=targets.device),
+            )
+            positions = torch.arange(seq_len, device=targets.device).unsqueeze(0)
+            target_mask = positions <= first_pad.unsqueeze(1)          # gồm EOT đầu tiên
 
         # ============================
         # 1. CTC Loss
@@ -116,22 +130,28 @@ class HybridLoss(nn.Module):
             raw_lengths = target_mask.sum(dim=1).long()
             
             targets_flat_list = []
-            
+
+            # Dựng 1 lần (không lặp lại trong vòng for): tập token điều khiển cần lọc khỏi CTC target.
+            # all_special_ids → generic, không sót token nào (vd <|vi|>, <|transcribe|>, <|notimestamps|>).
+            special_tensor = (
+                torch.tensor(self.special_ids, device=device)
+                if self.special_ids is not None else None
+            )
+
             for i in range(B):
                 L = raw_lengths[i].item()
                 # Slice valid target
                 target_seq = targets[i, :L]
-                # Filter special tokens for CTC
-                # CRITICAL FIX for Whisper: 
-                # Blank ID is 50257 (EOT). Targets MUST NOT contain blank_id.
-                # Also filter pad_id.
-                # We do NOT filter by range < 50257 because valid text tokens can be > 50257 in some vocabs.
-                valid_mask = (
-                    (target_seq != self.blank_id) &
-                    (target_seq != self.pad_id) &
-                    (target_seq != self.sot_id)
-                )
-                valid_tokens = target_seq[valid_mask] # Filter SOT=50258 for CTC targets.
+                # Lọc MỌI token điều khiển; fallback liệt kê tay nếu không có special_ids.
+                if special_tensor is not None:
+                    valid_mask = ~torch.isin(target_seq, special_tensor)
+                else:
+                    valid_mask = (
+                        (target_seq != self.blank_id) &
+                        (target_seq != self.pad_id) &
+                        (target_seq != self.sot_id)
+                    )
+                valid_tokens = target_seq[valid_mask]
                 
                 targets_list.append(valid_tokens)
                 actual_lengths.append(len(valid_tokens))
@@ -174,10 +194,16 @@ class HybridLoss(nn.Module):
             logits_shifted = ar_logits[:, :-1, :].contiguous()
             targets_shifted = targets[:, 1:].contiguous()
 
-            # Flatten: [B*L, V] for CrossEntropy
+            # Ignore theo VỊ TRÍ: chỉ bỏ padding (target_mask==0), GIỮ EOT (token thật).
+            # Tránh việc ignore theo giá trị pad_id==eot_id làm model không học token dừng.
+            if target_mask is not None:
+                mask_shifted = target_mask[:, 1:].contiguous()
+                targets_shifted = targets_shifted.masked_fill(mask_shifted == 0, -100)
+
+            # Flatten: [B*L, V] for CrossEntropy (ignore_index=-100)
             logits_flat = logits_shifted.view(-1, ar_logits.size(-1))
             ce_targets_flat = targets_shifted.view(-1)
-            
+
             ce_loss_val = self.ce_loss(logits_flat, ce_targets_flat)
         
         # ============================
@@ -230,13 +256,27 @@ class HybridLoss(nn.Module):
 
 
 # Factory
-def create_loss(config: Dict) -> HybridLoss:
-    """Create loss from config."""
+def create_loss(config: Dict, tokenizer=None) -> HybridLoss:
+    """Create loss from config.
+
+    Nếu truyền tokenizer: derive pad/blank/special_ids TỪ tokenizer (không hardcode 50257).
+    Nếu không: fallback về giá trị trong config (backward-compatible).
+    """
+    if tokenizer is not None:
+        pad_id = tokenizer.pad_token_id
+        blank_id = tokenizer.eot_token_id      # blank CTC = EOT (derive)
+        special_ids = tokenizer.all_special_ids
+    else:
+        pad_id = config['model'].get('pad_id', 50257)
+        blank_id = config['model'].get('blank_id', 50257)
+        special_ids = None
+
     return HybridLoss(
         vocab_size=config['model']['vocab_size'],
         ctc_weight=config['loss']['ctc_weight'],
         ce_weight=config['loss']['ce_weight'],
         quality_loss_weight=config['loss'].get('quality_loss_weight', 0.0),
-        pad_id=config['model'].get('pad_id', 50257),
-        blank_id=config['model'].get('blank_id', 50257),
+        pad_id=pad_id,
+        blank_id=blank_id,
+        special_ids=special_ids,
     )
