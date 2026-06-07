@@ -1,13 +1,9 @@
 import modal
-import os
 import sys
-import yaml
-from pathlib import Path
 
 # --- Config ---
 APP_NAME = "avsr-train-phase2-mqot"
 VOLUME_NAME = "avsr-volume"
-MANIFEST_PATH = "/mnt/manifests/grid_manifest.jsonl"
 
 # --- Image ---
 image = (
@@ -43,37 +39,15 @@ volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
     timeout=7200
 )
 def train_remote():
+    # Vỏ Modal MỎNG: setup path container rồi gọi logic train THUẦN (src/training/run.py).
     sys.path.append("/root")
-    import torch
-    import yaml
-    from src.training.trainer import Trainer
-    from src.utils.logging_utils import setup_logger
     from src.utils.config_utils import load_config
+    from src.training.run import run_training
 
-    logger = setup_logger("Train:Phase2")
-    logger.info("Starting Phase 2: MQOT Integration Training")
-    
-    if not os.path.exists(MANIFEST_PATH):
-        logger.error(f"Manifest {MANIFEST_PATH} not found. Run preprocessing first.")
-        return
-
-    # Load Config
-    config_path = "/root/configs/phase2_mqot.yaml"
-    if not os.path.exists(config_path):
-         logger.error(f"Config {config_path} not found.")
-         return
-
-    logger.info(f"Loading config from {config_path}")
-    # Load with inheritance
-    config = load_config(config_path)
-    
-    # Initialize Trainer
-    # Trainer handles the complexities of creating the MQOT-enabled model
-    # because config['model']['use_mqot'] is True
-    trainer = Trainer(config)
-    
-    # Start Training
-    trainer.train()
+    # Load config (inheritance). use_mqot=True nằm trong phase2_mqot.yaml.
+    config = load_config("/root/configs/phase2_mqot.yaml")
+    # run_training tự validate manifest trong config + chọn device (cuda trên Modal GPU).
+    run_training(config)
 
 @app.local_entrypoint()
 def main():

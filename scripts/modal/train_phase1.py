@@ -45,12 +45,7 @@ volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 )
 def train_remote(manifest_path: str = None, config_path: str = None):
     sys.path.append("/root")
-    import torch
-    import torch.optim as optim
-    from tqdm import tqdm
-    import yaml
-    
-    from src.training.trainer import Trainer
+    from src.training.run import run_training
     from src.utils.logging_utils import setup_logger
     from src.utils.config_utils import load_config
     
@@ -101,12 +96,9 @@ def train_remote(manifest_path: str = None, config_path: str = None):
                  logger.warning(f"Could not auto-detect data root for {subset_name} at {possible_data_root}")
         
     logger.info(f"Loaded config from {final_config_path}")
-    
-    # Initialize Trainer
-    trainer = Trainer(config)
-    
-    # Start Training
-    trainer.train()
+
+    # Logic train THUẦN (device-agnostic) — dùng chung với scripts/local.
+    run_training(config)
     
 
 @app.local_entrypoint()
