@@ -37,3 +37,14 @@ def supports_amp(device: torch.device) -> bool:
     MPS/CPU chưa hỗ trợ mixed-precision GradScaler ổn định → tránh bật để khỏi lỗi/giảm tốc.
     """
     return device.type == "cuda"
+
+
+def make_grad_scaler(device: torch.device, enabled: bool):
+    """GradScaler tương thích nhiều phiên bản torch.
+
+    API hợp nhất ``torch.amp.GradScaler`` chỉ có từ torch 2.3. Các build cũ hơn
+    (vd image cloud ghim torch 2.1.2) chỉ expose ``torch.cuda.amp.GradScaler``.
+    """
+    if hasattr(torch.amp, "GradScaler"):
+        return torch.amp.GradScaler(device.type, enabled=enabled)
+    return torch.cuda.amp.GradScaler(enabled=enabled)
