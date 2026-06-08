@@ -368,9 +368,9 @@ class Trainer:
                     logger.info("----------------------------------------")
                     logged_samples = True
                 
-                # Calculate Metrics
-                wer = self.metric_calc.compute_wer(target_text, decoded_text)
-                cer = self.metric_calc.compute_cer(target_text, decoded_text)
+                # Calculate Metrics — compute_wer(predictions, references) order matters!
+                wer = self.metric_calc.compute_wer(decoded_text, target_text)
+                cer = self.metric_calc.compute_cer(decoded_text, target_text)
                 
                 wer_meter.update(wer)
                 cer_meter.update(cer)

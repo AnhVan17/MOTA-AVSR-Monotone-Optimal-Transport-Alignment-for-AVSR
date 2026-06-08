@@ -38,9 +38,11 @@ class ViCocktailPreprocessor(BasePreprocessor):
             
         return metadata
 
-    def run(self, output_manifest="vicocktail_manifest.jsonl", output_dir=None, extract_features=True, limit_ratio: float = 1.0, filter_keyword: str = None):
+    def run(self, output_manifest="vicocktail_manifest.jsonl", output_dir=None, extract_features=True, limit_ratio: float = 1.0, filter_keyword: str = None, max_samples: int = None):
         """
         Overridden run method to handle WebDataset logic.
+
+        max_samples: nếu set, dừng sau khi xử đủ N mẫu (tiện cho preprocess thử local).
         """
         logger.info("Collecting .tar shards...")
         metadata = self.collect_metadata()
@@ -75,13 +77,19 @@ class ViCocktailPreprocessor(BasePreprocessor):
         for shard_item in tqdm(metadata, desc="Processing Shards"):
             tar_path = shard_item['full_path']
             shard_name = os.path.basename(tar_path).replace(".tar", "")
-            
+
+            # Dừng sớm nếu đã đủ max_samples (gộp qua các shard).
+            if max_samples is not None and len(manifest_entries) >= max_samples:
+                break
+
             try:
                 # Use WebDataset to iterate
                 # ViCocktail structure: key.mp4, key.wav, key.txt
                 dataset = wds.WebDataset(tar_path).decode()
-                
+
                 for i, sample in enumerate(dataset):
+                    if max_samples is not None and len(manifest_entries) >= max_samples:
+                        break
                     key = sample.get("__key__")
                     
                     # 1. Get Text (Check 'txt' or 'label')
@@ -90,6 +98,10 @@ class ViCocktailPreprocessor(BasePreprocessor):
                         text = sample["txt"]
                     elif "label" in sample:
                         text = sample["label"]
+                    # WebDataset .decode() leaves .txt as raw bytes → decode to str
+                    # (else JSON manifest write fails + .pt stores bytes).
+                    if isinstance(text, bytes):
+                        text = text.decode("utf-8")
                     
                     # 2. Get Video (MP4 bytes -> save temp -> process)
                     # Check available keys for video
