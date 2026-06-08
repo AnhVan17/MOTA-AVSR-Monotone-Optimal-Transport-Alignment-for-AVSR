@@ -6,7 +6,7 @@ Plot loss theo LR → chọn LR ở "elbow" (nơi loss bắt đầu giảm mạn
 Output: optimal_lr, loss_curve.png
 
 Usage:
-    python scripts/training/lr_finder.py --config configs/phase1_base.yaml --max_lr 1e-2 --num_batches 100
+    python scripts/local/lr_finder.py --config configs/phase1_base.yaml --max_lr 1e-2 --num_batches 100
 """
 import argparse
 import torch
