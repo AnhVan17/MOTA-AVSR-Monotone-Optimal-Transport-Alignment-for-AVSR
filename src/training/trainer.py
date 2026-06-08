@@ -122,7 +122,7 @@ class Trainer:
         self.use_amp = config['training'].get('use_amp', False) and supports_amp(self.device)
         if config['training'].get('use_amp', False) and not self.use_amp:
             logger.warning(f"AMP requested nhưng device {self.device.type} không hỗ trợ → tắt AMP.")
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
+        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
 
         # Training State
         self.start_epoch = 0
@@ -134,8 +134,8 @@ class Trainer:
             self._load_checkpoint(config['training']['pretrained_path'])
 
         # 5. Validation Tools
+        # (self.tokenizer đã tạo ở trên và được truyền vào dataloader → không gán lại.)
         self.metric_calc = MetricCalculator()
-        self.tokenizer = self.train_loader.dataset.tokenizer
         blank_id = config['model'].get('blank_id', 50257)
         self.decoder = CTCDecoder(self.tokenizer, blank_id=blank_id)
 
@@ -258,7 +258,7 @@ class Trainer:
             #      self.optimizer.zero_grad()
             
             # Forward & Loss (with Mixed Precision)
-            with torch.cuda.amp.autocast(enabled=self.use_amp):
+            with torch.amp.autocast('cuda', enabled=self.use_amp):
                 # E2E Support: forward() handles raw/features internally
                 outputs = self.model(audio, visual, targets)
                 
@@ -368,9 +368,9 @@ class Trainer:
                     logger.info("----------------------------------------")
                     logged_samples = True
                 
-                # Calculate Metrics
-                wer = self.metric_calc.compute_wer(target_text, decoded_text)
-                cer = self.metric_calc.compute_cer(target_text, decoded_text)
+                # Calculate Metrics — compute_wer(predictions, references) order matters!
+                wer = self.metric_calc.compute_wer(decoded_text, target_text)
+                cer = self.metric_calc.compute_cer(decoded_text, target_text)
                 
                 wer_meter.update(wer)
                 cer_meter.update(cer)

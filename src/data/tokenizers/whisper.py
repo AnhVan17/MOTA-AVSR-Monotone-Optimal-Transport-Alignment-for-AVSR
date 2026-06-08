@@ -9,7 +9,7 @@ class WhisperTokenizer:
     def __init__(
         self,
         language: str = "en",
-        model: str = "openai/whisper-tiny",
+        model: str = "openai/whisper-small",  # khớp audio_dim=768 của dự án (tiny=384 gây shape mismatch)
         task: str = "transcribe",
     ):
         self.language = language
