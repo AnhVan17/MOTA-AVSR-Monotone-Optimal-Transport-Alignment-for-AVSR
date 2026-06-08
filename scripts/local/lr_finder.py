@@ -1,12 +1,12 @@
 """
-LR Range Test — tìm optimal learning rate cho MOTA.
+LR Range Test — find the optimal learning rate for MOTA.
 
-Chạy 1 epoch với LR tăng dần từ min_lr → max_lr.
-Plot loss theo LR → chọn LR ở "elbow" (nơi loss bắt đầu giảm mạnh).
+Run 1 epoch with LR increasing from min_lr -> max_lr.
+Plot loss vs LR -> pick the LR at the "elbow" (where loss starts dropping sharply).
 Output: optimal_lr, loss_curve.png
 
 Usage:
-    python scripts/training/lr_finder.py --config configs/phase1_base.yaml --max_lr 1e-2 --num_batches 100
+    python scripts/local/lr_finder.py --config configs/phase1_base.yaml --max_lr 1e-2 --num_batches 100
 """
 import argparse
 import torch

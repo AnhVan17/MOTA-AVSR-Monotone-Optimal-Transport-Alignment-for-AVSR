@@ -13,7 +13,7 @@ VOL_MOUNT_PATH = "/data"
 
 image = (
     modal.Image.debian_slim(python_version="3.10")
-    # hf_transfer giúp tải siêu nhanh
+    # hf_transfer enables ultra-fast downloads
     .pip_install("huggingface_hub", "hf_transfer")
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})     
 )

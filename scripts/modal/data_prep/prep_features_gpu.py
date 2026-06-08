@@ -3,6 +3,7 @@ import os
 import glob
 import sys
 import shutil
+from pathlib import Path
 
 # --- Config ---
 APP_NAME = "avsr-prep-features-gpu"
@@ -10,37 +11,13 @@ VOLUME_NAME = "avsr-volume"
 CROPPED_ROOT = "/mnt/vicocktail_cropped"
 OUTPUT_ROOT = "/mnt/vicocktail_features"
 
-# --- Image Definition ---
-# Heavy image for GPU processing (PyTorch, Timm, etc)
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .apt_install("git", "ffmpeg")
-    .pip_install(
-        "torch==2.1.2",
-        "torchaudio==2.1.2",
-        "torchvision==0.16.2",
-        "numpy<2",
-        "transformers==4.36.2",
-        "tqdm==4.66.1",
-        "timm==0.9.12",
-        "webdataset==0.2.79", 
-        "huggingface_hub",
-        "face-alignment>=1.4.0",
-        "opencv-python-headless", # Still needed for VideoProcessor cv2
-        "soundfile",
-        "librosa",
-        "av",
-        "jiwer",
-        "matplotlib",
-        "pyyaml",
-        index_url="https://download.pytorch.org/whl/cu118",
-        extra_index_url="https://pypi.org/simple"
-    )
-    .add_local_dir("src", remote_path="/root/src")
-)
+# Repo root on path so we can import shared Modal image definitions locally (at app-build time).
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from src.infra.modal_image import PREPROC_IMAGE, get_volume
 
+image = PREPROC_IMAGE
 app = modal.App(APP_NAME)
-volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+volume = get_volume()
 
 @app.function(
     image=image,

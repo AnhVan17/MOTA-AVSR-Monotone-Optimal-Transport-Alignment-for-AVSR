@@ -14,35 +14,15 @@ DATA_ROOT = "/mnt/vicocktail_raw"
 OUTPUT_ROOT = "/mnt/vicocktail_features"
 
 # --- Image ---
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .apt_install("git", "ffmpeg", "libgl1", "libgl1-mesa-glx", "libglib2.0-0") # ffmpeg
-    .pip_install(
-        "torch==2.1.2",
-        "torchaudio==2.1.2",
-        "torchvision==0.16.2",
-        "numpy<2",
-        "transformers==4.36.2",
-        "tqdm==4.66.1",
-        "timm==0.9.12",             # Required by BasePreprocessor
-        "webdataset==0.2.79",
-        "huggingface_hub",
-        "face-alignment>=1.4.0",   # GPU-native face detection (replaces MediaPipe)
-        "opencv-python-headless",
-        "soundfile",
-        "librosa",
-        "av",                       # PyAV for robust audio
-        "jiwer",
-        "matplotlib",
-        index_url="https://download.pytorch.org/whl/cu118",
-        extra_index_url="https://pypi.org/simple" # Fallback for non-torch packages
-    )
-    .add_local_dir("src", remote_path="/root/src")
-    .add_local_dir("scripts", remote_path="/root/scripts")
-)
+# Repo root on path so we can import shared Modal image definitions locally (at app-build time).
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from src.infra.modal_image import PREPROC_IMAGE, get_volume
+
+# Shared preprocessing image + this script also ships scripts/ for its helpers.
+image = PREPROC_IMAGE.add_local_dir("scripts", remote_path="/root/scripts")
 
 app = modal.App(APP_NAME)
-volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+volume = get_volume()
 
 @app.function(
     image=image,

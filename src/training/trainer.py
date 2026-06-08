@@ -12,6 +12,7 @@ from src.training.losses import create_loss
 from src.evaluation.metrics import MetricCalculator
 from src.evaluation.decoding import CTCDecoder
 from src.utils.logging_utils import setup_logger
+from src.utils.device import get_device, supports_amp
 from src.utils.common import (
     AverageMeter,
     save_checkpoint,
@@ -61,7 +62,8 @@ class Trainer:
     
     def __init__(self, config: Dict):
         self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Optional override via config['training']['device']; else auto cuda → mps → cpu.
+        self.device = get_device(config.get('training', {}).get('device'))
         
         # Setup Checkpoint Directory
         self.checkpoint_dir = Path(config['logging']['checkpoint_dir'])
@@ -116,7 +118,10 @@ class Trainer:
         )
         
         # Mixed Precision
-        self.use_amp = config['training'].get('use_amp', False)
+        # AMP chỉ ổn định trên CUDA — tự tắt trên MPS/CPU để khỏi lỗi/giảm tốc.
+        self.use_amp = config['training'].get('use_amp', False) and supports_amp(self.device)
+        if config['training'].get('use_amp', False) and not self.use_amp:
+            logger.warning(f"AMP requested nhưng device {self.device.type} không hỗ trợ → tắt AMP.")
         self.scaler = torch.cuda.amp.GradScaler(enabled=self.use_amp)
 
         # Training State

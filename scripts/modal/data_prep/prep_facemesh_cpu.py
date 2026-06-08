@@ -11,23 +11,13 @@ VOLUME_NAME = "avsr-volume"
 DATA_ROOT = "/mnt/vicocktail_raw"
 OUTPUT_ROOT = "/mnt/vicocktail_cropped"
 
-# --- Image Definition ---
-# Lightweight image for CPU-only processing
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .apt_install("ffmpeg", "libgl1-mesa-glx") # System libs for OpenCV
-    .pip_install(
-        "face-alignment>=1.4.0",  # GPU-native face detection
-        "opencv-python-headless",
-        "numpy<2",
-        "tqdm",
-        "pyyaml"
-    )
-    .add_local_dir("src", remote_path="/root/src")
-)
+# Repo root on path so we can import shared Modal image definitions locally (at app-build time).
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+from src.infra.modal_image import CPU_FACEMESH_IMAGE, get_volume
 
+image = CPU_FACEMESH_IMAGE
 app = modal.App(APP_NAME)
-volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+volume = get_volume()
 
 # Global worker function (Picklable)
 def process_video_task(args):

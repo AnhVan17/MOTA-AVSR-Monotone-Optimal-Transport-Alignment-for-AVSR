@@ -1,56 +1,28 @@
 import modal
 import os
 import sys
-import yaml
 from pathlib import Path
+
+# Repo root on path so we can import shared Modal image definitions locally (at app-build time).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from src.infra.modal_image import ML_TRAIN_IMAGE, get_volume
 
 # --- Config ---
 APP_NAME = "avsr-train-phase1"
-VOLUME_NAME = "avsr-volume"
 MANIFEST_PATH = "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000_manifest.jsonl"
 
-# --- Image ---
-# Same image dependencies as preprocess
-image = (
-    modal.Image.debian_slim(python_version="3.10")
-    .apt_install("git")
-    .pip_install(
-        "torch==2.1.2",
-        "torchaudio==2.1.2",
-        "torchvision==0.16.2",
-        "numpy<2",
-        index_url="https://download.pytorch.org/whl/cu118"
-    ).pip_install(
-        "transformers==4.36.2",
-        "tqdm==4.66.1",
-        "numpy<2",
-        "jiwer",
-        "matplotlib",
-        "soundfile",
-        "opencv-python-headless"
-    )
-    # Add configs folder
-    .add_local_dir("configs", remote_path="/root/configs")
-    .add_local_dir("src", remote_path="/root/src")
-)
-
 app = modal.App(APP_NAME)
-volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
+volume = get_volume()
 
 @app.function(
-    image=image,
+    image=ML_TRAIN_IMAGE,
     volumes={"/mnt": volume},
     gpu="A10G",         # A10G is good balance
     timeout=7200        # 2 hours
 )
 def train_remote(manifest_path: str = None, config_path: str = None):
     sys.path.append("/root")
-    import torch
-    import torch.optim as optim
-    from tqdm import tqdm
-    import yaml
-    
-    from src.training.trainer import Trainer
+    from src.training.run import run_training
     from src.utils.logging_utils import setup_logger
     from src.utils.config_utils import load_config
     
@@ -101,12 +73,9 @@ def train_remote(manifest_path: str = None, config_path: str = None):
                  logger.warning(f"Could not auto-detect data root for {subset_name} at {possible_data_root}")
         
     logger.info(f"Loaded config from {final_config_path}")
-    
-    # Initialize Trainer
-    trainer = Trainer(config)
-    
-    # Start Training
-    trainer.train()
+
+    # Pure training logic (device-agnostic) — shared with scripts/local.
+    run_training(config)
     
 
 @app.local_entrypoint()
