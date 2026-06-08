@@ -56,8 +56,29 @@ python scripts/local/data/verify_vocab_vi.py
   therefore slow at the CTC step; prefer Modal/CUDA for real training, use MPS only for
   smoke/debug.
 
+## Shared Modal image ([`src/infra/modal_image.py`](../src/infra/modal_image.py))
+
+Modal `image` + `volume` definitions are centralized so a dependency bump happens in ONE place.
+Each modal script imports the flavor it needs instead of redefining a pip block:
+
+| Image                | Used by                            |
+| -------------------- | ---------------------------------- |
+| `ML_TRAIN_IMAGE`     | train_phase1/2, inference_phase1   |
+| `PREPROC_IMAGE`      | prep_features_gpu, prep_vicocktail |
+| `CPU_FACEMESH_IMAGE` | prep_facemesh_cpu                  |
+| `BARE_IMAGE`         | volume-management / debug utils    |
+
+```python
+from src.infra.modal_image import ML_TRAIN_IMAGE, get_volume
+app = modal.App("...")
+volume = get_volume()
+
+@app.function(image=ML_TRAIN_IMAGE, volumes={"/mnt": volume}, gpu="A10G")
+def remote(): ...
+```
+
 ## DRY principle
 
 Training logic is written ONCE in `src/training/run.py::run_training(config)`. Both `modal/`
 and `local/` only build a `config` (with different paths) and call into it. The training loop
-is never copied.
+is never copied. Likewise the Modal image is defined once in `src/infra/modal_image.py`.
