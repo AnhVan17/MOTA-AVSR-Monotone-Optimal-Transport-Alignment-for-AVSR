@@ -2,10 +2,26 @@
 import os
 import argparse
 from pathlib import Path
-from huggingface_hub import snapshot_download
+from huggingface_hub import snapshot_download, hf_hub_download
 from src.utils.logging_utils import setup_logger
 
 logger = setup_logger(__name__)
+
+REPO_ID = "nguyenvulebinh/ViCocktail"
+
+
+def download_single_shard(output_dir: str, shard: str):
+    """Download ONE specific .tar shard (small, for local testing).
+
+    shard: filename like 'avvn-train-000098.tar' (smallest is ~207MB).
+    """
+    filename = shard if shard.startswith("data/") else f"data/{shard}"
+    logger.info(f"Downloading single shard {filename} from {REPO_ID}...")
+    path = hf_hub_download(
+        repo_id=REPO_ID, repo_type="dataset", filename=filename, local_dir=output_dir
+    )
+    logger.info(f"Saved: {path} ({os.path.getsize(path) / 1e6:.1f} MB)")
+    return path
 
 def download_vicocktail(output_dir: str, subsets: list = None):
     """
@@ -56,13 +72,18 @@ def download_vicocktail(output_dir: str, subsets: list = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download ViCocktail Dataset")
     parser.add_argument("--output_dir", type=str, required=True, help="Path to save the dataset")
-    parser.add_argument("--subsets", nargs="+", default=['train'], 
-                        help="Subsets to download (default: train). Pass 'all' for everything.")
-    
+    parser.add_argument("--subsets", nargs="+", default=['train'],
+                        help="Subsets to download (default: train). Pass 'all' for everything. (LARGE)")
+    parser.add_argument("--shard", type=str, default=None,
+                        help="Download ONE shard only, e.g. 'avvn-train-000098.tar' (small, for local test)")
+
     args = parser.parse_args()
-    
-    subsets = args.subsets
-    if 'all' in subsets:
-        subsets = None
-        
-    download_vicocktail(args.output_dir, subsets)
+
+    # Single-shard mode (recommended for local testing — avoids huge multi-GB downloads).
+    if args.shard:
+        download_single_shard(args.output_dir, args.shard)
+    else:
+        subsets = args.subsets
+        if 'all' in subsets:
+            subsets = None
+        download_vicocktail(args.output_dir, subsets)

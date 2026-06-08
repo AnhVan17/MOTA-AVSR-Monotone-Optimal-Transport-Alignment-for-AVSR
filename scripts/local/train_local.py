@@ -104,12 +104,33 @@ def build_config(manifest, data_root, ckpt_dir, device, epochs, use_mqot):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", default=None, help="cuda|mps|cpu (default: auto-detect)")
-    ap.add_argument("--samples", type=int, default=8)
+    ap.add_argument("--samples", type=int, default=8, help="synthetic sample count (ignored with --manifest)")
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--no-mqot", action="store_true", help="disable the MQOT path")
-    ap.add_argument("--keep", action="store_true", help="keep the temp dataset for inspection")
+    ap.add_argument("--keep", action="store_true", help="keep the temp synthetic dataset")
+    # Real-data mode: point at an existing manifest + feature dir (e.g. from prep_local.py).
+    ap.add_argument("--manifest", default=None, help="train on a REAL manifest instead of synthetic")
+    ap.add_argument("--data-root", default=None, help="feature root for --manifest")
+    ap.add_argument("--ckpt-dir", default=None, help="checkpoint dir (real-data mode)")
     args = ap.parse_args()
 
+    # --- Real-data mode ---
+    if args.manifest:
+        data_root = args.data_root or str(Path(args.manifest).parent)
+        ckpt = args.ckpt_dir or str(Path(data_root) / "checkpoints_local")
+        config = build_config(
+            args.manifest, data_root, ckpt, args.device, args.epochs, not args.no_mqot
+        )
+        print(
+            f"[local-train] REAL data | manifest={args.manifest} device={args.device or 'auto'} "
+            f"epochs={args.epochs} use_mqot={not args.no_mqot}"
+        )
+        run_training(config)
+        ckpts = sorted(p.name for p in Path(ckpt).glob("*.pt")) if Path(ckpt).exists() else []
+        print(f"[local-train] PASS — trained on real data. checkpoints={ckpts} (dir={ckpt})")
+        return
+
+    # --- Synthetic mode (self-contained) ---
     workdir = Path(tempfile.mkdtemp(prefix="avsr_local_train_"))
     print(f"[local-train] workdir={workdir}")
     try:
