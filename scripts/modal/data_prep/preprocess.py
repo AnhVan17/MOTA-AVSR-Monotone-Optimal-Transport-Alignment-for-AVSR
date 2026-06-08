@@ -12,8 +12,8 @@ import threading
 # Now uses face-alignment (GPU-native), no context conflicts.
 #
 # PLEASE USE THE SPECIALIZED MICROSERVICES INSTEAD:
-# 1. scripts/data_prep/prep_facemesh_cpu.py  (CPU-only, stable FaceMesh)
-# 2. scripts/data_prep/prep_features_gpu.py  (GPU-only, Fast ResNet/Whisper)
+# 1. scripts/modal/data_prep/prep_facemesh_cpu.py  (CPU-only, stable FaceMesh)
+# 2. scripts/modal/data_prep/prep_features_gpu.py  (GPU-only, Fast ResNet/Whisper)
 #
 # This file is kept only for reference / archival purposes.
 
@@ -300,8 +300,8 @@ def main(
     """
     Unified Preprocessing CLI (SOTA: Full Frames, no keyframe selection)
     Usage:
-       modal run scripts/data_prep/preprocess.py --stage crop --dataset grid
-       modal run scripts/data_prep/preprocess.py --stage extract --dataset grid
+       modal run scripts/modal/data_prep/preprocess.py --stage crop --dataset grid
+       modal run scripts/modal/data_prep/preprocess.py --stage extract --dataset grid
     """
     sys.path.append(os.getcwd())
     from src.utils.logging_utils import setup_logger
