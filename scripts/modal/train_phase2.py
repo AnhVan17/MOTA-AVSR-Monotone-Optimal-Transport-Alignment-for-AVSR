@@ -39,14 +39,15 @@ volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
     timeout=7200
 )
 def train_remote():
-    # Vỏ Modal MỎNG: setup path container rồi gọi logic train THUẦN (src/training/run.py).
+    # THIN Modal wrapper: set up container paths, then call the pure training logic
+    # (src/training/run.py).
     sys.path.append("/root")
     from src.utils.config_utils import load_config
     from src.training.run import run_training
 
-    # Load config (inheritance). use_mqot=True nằm trong phase2_mqot.yaml.
+    # Load config (inheritance). use_mqot=True lives in phase2_mqot.yaml.
     config = load_config("/root/configs/phase2_mqot.yaml")
-    # run_training tự validate manifest trong config + chọn device (cuda trên Modal GPU).
+    # run_training validates the manifest in config + selects device (cuda on Modal GPU).
     run_training(config)
 
 @app.local_entrypoint()

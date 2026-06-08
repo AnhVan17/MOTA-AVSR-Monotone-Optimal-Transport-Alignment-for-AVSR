@@ -97,7 +97,7 @@ def train_remote(manifest_path: str = None, config_path: str = None):
         
     logger.info(f"Loaded config from {final_config_path}")
 
-    # Logic train THUẦN (device-agnostic) — dùng chung với scripts/local.
+    # Pure training logic (device-agnostic) — shared with scripts/local.
     run_training(config)
     
 

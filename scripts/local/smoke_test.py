@@ -1,12 +1,13 @@
-"""Smoke test NHANH — chạy thẳng local, tự dò device (cuda/mps/cpu).
+"""FAST smoke test — runs directly on the local machine, auto-detects device (cuda/mps/cpu).
 
-Mục đích: kiểm tra pipeline compute (model → loss → backward → optimizer) chạy được
-trên máy hiện tại MÀ KHÔNG cần Modal, KHÔNG cần data/manifest thật, KHÔNG tải backbone lớn.
-Dùng dữ liệu giả (random tensor) đúng shape interface để bắt lỗi shape/device/op sớm.
+Purpose: verify the compute pipeline (model -> loss -> backward -> optimizer) runs on the
+current machine WITHOUT Modal, WITHOUT real data/manifest, and WITHOUT downloading a large
+backbone. Uses fake data (random tensors) with the correct interface shapes to catch
+shape/device/op errors early.
 
 Usage:
-    python scripts/local/smoke_test.py                  # tự dò device, có MQOT
-    python scripts/local/smoke_test.py --device cpu      # ép CPU
+    python scripts/local/smoke_test.py                  # auto-detect device, MQOT on
+    python scripts/local/smoke_test.py --device cpu      # force CPU
     python scripts/local/smoke_test.py --steps 5 --no-mqot
 """
 import argparse
@@ -14,13 +15,13 @@ import os
 import sys
 from pathlib import Path
 
-# MPS (Apple Silicon) chưa hỗ trợ vài op (vd aten::_ctc_loss). Cho phép fallback CPU cho op thiếu.
-# Phải set TRƯỚC khi import torch.
+# MPS (Apple Silicon) does not support some ops yet (e.g. aten::_ctc_loss). Allow CPU
+# fallback for missing ops. Must be set BEFORE importing torch.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 import torch
 
-# Project root vào sys.path để import src.*
+# Add project root to sys.path so `import src.*` works.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.models.mota import create_model
@@ -29,7 +30,7 @@ from src.utils.device import get_device, supports_amp
 
 
 def build_config(use_mqot: bool, vocab_size: int) -> dict:
-    """Config nhỏ gọn cho smoke test (model bé, chạy nhanh)."""
+    """Compact config for the smoke test (small model, runs fast)."""
     return {
         "model": {
             "audio_dim": 768,
@@ -39,7 +40,7 @@ def build_config(use_mqot: bool, vocab_size: int) -> dict:
             "num_decoder_layers": 2,
             "num_heads": 4,
             "vocab_size": vocab_size,
-            # blank/pad nằm TRONG vocab nhỏ của smoke (mặc định 50257 sẽ vượt phạm vi).
+            # blank/pad must stay WITHIN the small smoke vocab (default 50257 would be out of range).
             "blank_id": vocab_size - 1,
             "pad_id": vocab_size - 1,
             "dropout": 0.1,
@@ -51,10 +52,10 @@ def build_config(use_mqot: bool, vocab_size: int) -> dict:
 
 
 def make_batch(B: int, Ta: int, Tv: int, L: int, vocab_size: int, device: torch.device):
-    """Dữ liệu giả đúng shape interface MOTA."""
+    """Fake data matching the MOTA interface shapes."""
     audio = torch.randn(B, Ta, 768, device=device)
     visual = torch.randn(B, Tv, 512, device=device)
-    # target là text token (< vocab_size-1 để tránh trùng blank/pad); mask 1 hết (không pad)
+    # targets are text tokens (< vocab_size-1 to avoid clashing with blank/pad); mask all 1 (no pad).
     targets = torch.randint(0, vocab_size - 1, (B, L), device=device)
     target_mask = torch.ones(B, L, dtype=torch.bool, device=device)
     return audio, visual, targets, target_mask
@@ -62,11 +63,11 @@ def make_batch(B: int, Ta: int, Tv: int, L: int, vocab_size: int, device: torch.
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--device", default=None, help="cuda|mps|cpu (mặc định: tự dò)")
+    ap.add_argument("--device", default=None, help="cuda|mps|cpu (default: auto-detect)")
     ap.add_argument("--steps", type=int, default=3)
     ap.add_argument("--batch-size", type=int, default=2)
-    ap.add_argument("--vocab-size", type=int, default=1000, help="nhỏ để chạy nhanh")
-    ap.add_argument("--no-mqot", action="store_true", help="tắt MQOT path")
+    ap.add_argument("--vocab-size", type=int, default=1000, help="small for speed")
+    ap.add_argument("--no-mqot", action="store_true", help="disable the MQOT path")
     args = ap.parse_args()
 
     device = get_device(args.device)
@@ -97,7 +98,7 @@ def main():
         loss = loss_dict["total_loss"]
 
         if not torch.isfinite(loss):
-            raise RuntimeError(f"[smoke] FAIL: loss không hữu hạn ở step {step}: {loss.item()}")
+            raise RuntimeError(f"[smoke] FAIL: loss is not finite at step {step}: {loss.item()}")
 
         optimizer.zero_grad()
         loss.backward()
@@ -108,7 +109,7 @@ def main():
             f"quality={loss_dict['quality_loss'].item():.3f}"
         )
 
-    print(f"[smoke] PASS — pipeline chạy {args.steps} step trên {device}, loss hữu hạn, gradient OK.")
+    print(f"[smoke] PASS — pipeline ran {args.steps} step(s) on {device}, loss finite, gradient OK.")
 
 
 if __name__ == "__main__":
