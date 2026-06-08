@@ -46,6 +46,9 @@ ML_TRAIN_IMAGE = (
         "matplotlib",
         "soundfile",
         "opencv-python-headless",
+        # Re-pin numpy<2: this separate layer re-resolves deps and would otherwise
+        # upgrade numpy to 2.x, breaking torch 2.1.2's ABI (compiled against numpy 1.x).
+        "numpy<2",
     )
     .add_local_dir("configs", remote_path="/root/configs")
     .add_local_dir("src", remote_path="/root/src")
