@@ -1,18 +1,18 @@
 # Scripts
 
-Chia rõ **2 phần** theo nơi chạy:
+Split into **two parts** by where they run:
 
-## `modal/` — chạy trên cloud (Modal GPU)
+## `modal/` — runs on the cloud (Modal GPU)
 
-Vỏ Modal mỏng: định nghĩa `image` + `volume` + `@app.function(gpu=...)`, rồi gọi logic
-train THUẦN ở [`src/training/run.py`](../src/training/run.py). Không lặp lại logic train.
+Thin Modal wrappers: they define `image` + `volume` + `@app.function(gpu=...)`, then call the
+pure training logic in [`src/training/run.py`](../src/training/run.py). Training logic is not duplicated.
 
 ```text
 modal/
-├── train_phase1.py, train_phase2.py   # training (gọi src/training/run.py)
-├── data_prep/                         # tiền xử lý: crop, extract feature
+├── train_phase1.py, train_phase2.py   # training (calls src/training/run.py)
+├── data_prep/                         # preprocessing: crop, feature extraction
 ├── inference/                         # inference_phase1
-└── utils/                             # quản lý Modal Volume, debug, verify vocab
+└── utils/                             # Modal Volume management, debug, vocab verification
 ```
 
 ```bash
@@ -22,40 +22,42 @@ modal run scripts/modal/data_prep/prep_features_gpu.py
 modal run scripts/modal/utils/check_volume.py
 ```
 
-## `local/` — chạy thẳng trên máy, tự dò device
+## `local/` — runs directly on your machine, auto-detects device
 
-Tự detect **cuda → mps (Apple) → cpu** qua [`src/utils/device.py`](../src/utils/device.py).
-Phục vụ test nhanh, không cần Modal/cloud.
+Auto-detects **cuda → mps (Apple) → cpu** via [`src/utils/device.py`](../src/utils/device.py).
+For fast testing, no Modal/cloud required.
 
 ```text
 local/
-├── smoke_test.py     # smoke test nhanh (không cần data thật)
+├── smoke_test.py     # fast smoke test (no real data needed)
 ├── lr_finder.py      # LR range test
-└── data/             # tiện ích data thuần local (split/merge manifest, verify vocab, download)
+└── data/             # pure local data utilities (split/merge manifest, verify vocab, download)
 ```
 
 ```bash
-# Smoke test: kiểm pipeline (model→loss→backward) chạy được, KHÔNG cần data thật
-python scripts/local/smoke_test.py                 # tự dò device
-python scripts/local/smoke_test.py --device cpu     # ép CPU
-python scripts/local/smoke_test.py --no-mqot        # tắt MQOT
+# Smoke test: verify the pipeline (model->loss->backward) runs, NO real data needed
+python scripts/local/smoke_test.py                 # auto-detect device
+python scripts/local/smoke_test.py --device cpu     # force CPU
+python scripts/local/smoke_test.py --no-mqot        # disable MQOT
 
 # LR range test
 python scripts/local/lr_finder.py --config configs/phase1_base.yaml
 
-# Tiện ích data (chạy từ repo root)
+# Data utilities (run from repo root)
 python scripts/local/data/split_manifest.py
 python scripts/local/data/verify_vocab_vi.py
 ```
 
-### Lưu ý Apple Silicon (MPS)
+### Apple Silicon (MPS) notes
 
-- **AMP** (mixed precision) chỉ chạy trên CUDA → tự tắt trên MPS/CPU.
-- **CTC loss** (`aten::_ctc_loss`) chưa có trên MPS → smoke_test bật sẵn
-  `PYTORCH_ENABLE_MPS_FALLBACK=1` để op này fallback CPU. Train thật trên Mac vì vậy
-  sẽ chậm ở bước CTC; ưu tiên dùng Modal/CUDA cho train thật, MPS chỉ để smoke/debug.
+- **AMP** (mixed precision) only runs on CUDA → auto-disabled on MPS/CPU.
+- **CTC loss** (`aten::_ctc_loss`) is not implemented on MPS → smoke_test sets
+  `PYTORCH_ENABLE_MPS_FALLBACK=1` so this op falls back to CPU. Real training on a Mac is
+  therefore slow at the CTC step; prefer Modal/CUDA for real training, use MPS only for
+  smoke/debug.
 
-## Nguyên tắc DRY
+## DRY principle
 
-Logic train viết MỘT lần ở `src/training/run.py::run_training(config)`. Cả `modal/` và
-`local/` chỉ dựng `config` (đường dẫn khác nhau) rồi gọi vào đó. Không sao chép vòng train.
+Training logic is written ONCE in `src/training/run.py::run_training(config)`. Both `modal/`
+and `local/` only build a `config` (with different paths) and call into it. The training loop
+is never copied.

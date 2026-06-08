@@ -1,7 +1,7 @@
 """
 Volume Inspector for Modal.com
 ==============================
-Kiểm tra chi tiết cấu trúc và dữ liệu trên Modal Volume.
+Inspect the structure and data on a Modal Volume in detail.
 
 Usage:
     modal run scripts/modal/utils/check_volume.py
