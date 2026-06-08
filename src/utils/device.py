@@ -34,6 +34,6 @@ def get_device(prefer: Optional[str] = None) -> torch.device:
 def supports_amp(device: torch.device) -> bool:
     """AMP (mixed precision) hiện chỉ ổn định trên CUDA.
 
-    MPS/CPU chưa hỗ trợ torch.cuda.amp → tránh bật để khỏi lỗi/giảm tốc.
+    MPS/CPU chưa hỗ trợ mixed-precision GradScaler ổn định → tránh bật để khỏi lỗi/giảm tốc.
     """
     return device.type == "cuda"

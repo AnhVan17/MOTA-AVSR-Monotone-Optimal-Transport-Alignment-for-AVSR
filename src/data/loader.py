@@ -38,7 +38,7 @@ def build_dataloader(
     data_cfg = config.get('data', config)
 
     # --- Manifest path ---
-    manifest_key = f"{mode}_manifest" if mode == "train" else f"{mode}_manifest"
+    manifest_key = f"{mode}_manifest"
     manifest_path = data_cfg.get(manifest_key)
     if manifest_path is None:
         manifest_path = config.get(manifest_key)

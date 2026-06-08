@@ -95,7 +95,11 @@ class HybridDecoder(nn.Module):
             target_embed = self.target_embedding(target)
             target_embed = target_embed + self.pos_encoding[:, :L, :]
 
-            # Causal mask — dùng buffer đã cache
+            # Causal mask — dùng buffer đã cache. Báo lỗi rõ nếu target dài hơn max_len.
+            assert L <= self.causal_mask.size(0), (
+                f"Target length {L} > max_len {self.causal_mask.size(0)}; "
+                f"tăng max_len khi khởi tạo HybridDecoder."
+            )
             causal_mask = self.causal_mask[:L, :L]
 
             # Decode
