@@ -62,7 +62,8 @@ class Trainer:
     
     def __init__(self, config: Dict):
         self.config = config
-        self.device = get_device()   # cuda → mps → cpu (device-agnostic)
+        # Optional override via config['training']['device']; else auto cuda → mps → cpu.
+        self.device = get_device(config.get('training', {}).get('device'))
         
         # Setup Checkpoint Directory
         self.checkpoint_dir = Path(config['logging']['checkpoint_dir'])
