@@ -1,0 +1,23 @@
+# Trial config — validate Modal pipeline on EXISTING volume data (small + safe).
+# - val points to an existing manifest (avvn-val_manifest.jsonl does NOT exist on volume)
+# - separate checkpoint_dir so we DON'T overwrite the team's checkpoints/phase1
+# - max_samples + 1 epoch keep credit cost minimal
+defaults:
+  - base
+
+loss:
+  ctc_weight: 0.5
+  ce_weight: 0.5
+
+data:
+  train_manifest: "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000_manifest.jsonl"
+  val_manifest: "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000_manifest.jsonl"
+  data_root: "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000"
+  max_samples: 64
+  batch_size: 8
+
+training:
+  num_epochs: 1
+
+logging:
+  checkpoint_dir: "/mnt/checkpoints/phase1_trial"
