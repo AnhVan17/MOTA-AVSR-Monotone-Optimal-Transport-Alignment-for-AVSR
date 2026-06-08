@@ -2,8 +2,12 @@ import modal
 import sys
 from pathlib import Path
 
-# Repo root on path so we can import shared Modal image definitions locally (at app-build time).
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+# Make `src` importable. Locally: add repo root (for app-build). In Modal containers the
+# script is flattened to /root and src lives at /root/src, so parents[N] would be out of range.
+if modal.is_local():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+else:
+    sys.path.insert(0, "/root")
 from src.infra.modal_image import ML_TRAIN_IMAGE, get_volume
 
 APP_NAME = "avsr-train-phase2-mqot"
