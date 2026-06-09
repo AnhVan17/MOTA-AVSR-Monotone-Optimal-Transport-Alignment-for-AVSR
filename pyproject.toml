@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit: fast, isolated unit tests (no GPU, no network)",
+    "integration: cross-module / IO tests",
+]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# Keep CI focused on real correctness signals (syntax errors + pyflakes:
+# undefined names, unused imports/vars, redefinitions), not stylistic noise.
+select = ["E9", "F"]
