@@ -1,4 +1,3 @@
-import json
 import random
 import os
 import argparse
@@ -44,7 +43,7 @@ def split_manifest(input_path, output_dir, train_ratio=0.8, seed=42):
     with open(val_path, 'w') as f:
         f.writelines(val_lines)
         
-    print(f"✅ Split Complete:")
+    print("✅ Split Complete:")
     print(f"   Train: {len(train_lines)} ({train_path})")
     print(f"   Val:   {len(val_lines)}   ({val_path})")
 

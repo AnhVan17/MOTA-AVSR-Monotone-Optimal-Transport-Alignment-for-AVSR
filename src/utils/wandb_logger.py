@@ -1,6 +1,7 @@
 """
 WandB Logger for MOTA AVSR Training.
 """
+import wandb
 import numpy as np
 from typing import Dict, Any, Optional
 

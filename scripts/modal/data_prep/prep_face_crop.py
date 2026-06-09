@@ -6,16 +6,16 @@ import shutil
 from pathlib import Path
 
 # --- Config ---
-APP_NAME = "avsr-prep-facemesh-cpu"
+APP_NAME = "avsr-prep-face-crop"
 VOLUME_NAME = "avsr-volume"
 DATA_ROOT = "/mnt/vicocktail_raw"
 OUTPUT_ROOT = "/mnt/vicocktail_cropped"
 
 # Repo root on path so we can import shared Modal image definitions locally (at app-build time).
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from src.infra.modal_image import CPU_FACEMESH_IMAGE, get_volume
+from src.infra.modal_image import FACE_CROP_IMAGE, get_volume
 
-image = CPU_FACEMESH_IMAGE
+image = FACE_CROP_IMAGE
 app = modal.App(APP_NAME)
 volume = get_volume()
 
@@ -28,7 +28,7 @@ def process_video_task(args):
     """
     vid_path, temp_dir, shard_out_dir = args
     import os
-    from src.data.preprocessors.facemesh import FaceMeshPreprocessor
+    from src.data.preprocessors.mouth_cropper import MouthCropper
     
     try:
         # SAFETY: Rename .video to .mp4 to help OpenCV detect container format
@@ -42,7 +42,7 @@ def process_video_task(args):
                 pass
 
         # Singleton handles Init once per process
-        processor = FaceMeshPreprocessor() 
+        processor = MouthCropper()
         
         # Construct output path relative to temp_dir
         rel_path = os.path.relpath(vid_path, temp_dir)
@@ -124,7 +124,7 @@ def process_shard(tar_path):
     task_args = [(f, temp_dir, shard_out_dir) for f in video_files]
 
     # 5. Parallel Execution
-    print(f"Processing with Pool...")
+    print("Processing with Pool...")
     success_count = 0
     with ProcessPoolExecutor(max_workers=4) as executor:
         results = list(tqdm(
@@ -158,7 +158,7 @@ def main(subset: str = "train", limit_ratio: float = 0.1): # Default 10% batch
         print("🆕 No history found. Starting fresh.")
 
     # 2. List all available shards
-    print(f"Launching CPU FaceMesh Processing for {subset} (Batch Ratio: {limit_ratio})...")
+    print(f"Launching CPU mouth-crop processing for {subset} (Batch Ratio: {limit_ratio})...")
     all_tars = list_tars.remote(subset)
     all_tars.sort() # Ensure consistent order
     print(f"   Found {len(all_tars)} total shards available.")

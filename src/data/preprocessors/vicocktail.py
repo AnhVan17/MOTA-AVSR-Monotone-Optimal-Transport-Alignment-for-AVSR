@@ -1,11 +1,9 @@
 
 import os
-import tarfile
 import glob
 import torch
 import webdataset as wds
 from tqdm import tqdm
-from pathlib import Path
 from typing import List, Dict
 
 from .base import BasePreprocessor, PreprocessConfig

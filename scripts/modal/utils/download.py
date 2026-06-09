@@ -1,6 +1,5 @@
 import modal
 import os
-import time
 import logging
 
 # Configure basic logging since this script acts as a standalone entry point

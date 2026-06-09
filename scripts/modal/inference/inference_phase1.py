@@ -37,7 +37,6 @@ def run_inference(
         limit: Max samples to process (default 10)
     """
     sys.path.append("/root")
-    import torch
     from src.models.mota import create_model
     from src.data.tokenizers.whisper import WhisperTokenizer
     from src.data.loader import build_dataloader

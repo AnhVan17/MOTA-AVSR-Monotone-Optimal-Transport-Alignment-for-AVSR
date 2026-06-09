@@ -10,7 +10,6 @@ Usage:
 """
 import argparse
 import torch
-import torch.nn as nn
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
@@ -144,7 +143,7 @@ def find_optimal_lr(
     print()
     print("=== Suggested Config Update ===")
     print(f"  learning_rate: {optimal_lr:.6f}  # ~{optimal_lr:.1e}")
-    print(f"  # Suggested warmup_steps based on dataset size:")
+    print("  # Suggested warmup_steps based on dataset size:")
     dataset_size = len(train_loader.dataset)
     print(f"  #   ~{max(100, dataset_size // 10)} (10% of dataset)")
 

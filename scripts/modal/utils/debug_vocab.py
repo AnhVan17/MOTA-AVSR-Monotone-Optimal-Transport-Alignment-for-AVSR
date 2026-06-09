@@ -1,5 +1,4 @@
 import modal
-import os
 
 # Define the image with necessary dependencies
 # We use the same base image as training to ensure consistency
@@ -43,7 +42,7 @@ def check_vocab():
         print(f"Error decoding {target_blank}: {e}")
         
     # Check what was previously 4
-    print(f"\n--- Checking Old Blank ID: 4 ---")
+    print("\n--- Checking Old Blank ID: 4 ---")
     decoded_4 = tokenizer.decode([4], skip_special_tokens=False)
     print(f"ID 4 decodes to: '{decoded_4}'")
 

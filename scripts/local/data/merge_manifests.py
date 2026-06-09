@@ -1,7 +1,6 @@
 import glob
 import os
 import argparse
-import json
 from tqdm import tqdm
 
 def merge_manifests(data_root: str, output_path: str, subset_keyword: str):

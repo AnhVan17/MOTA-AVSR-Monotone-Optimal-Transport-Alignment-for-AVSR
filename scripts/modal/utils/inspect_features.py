@@ -2,7 +2,6 @@ import modal
 import torch
 import os
 import glob
-import sys
 
 # --- Config ---
 APP_NAME = "avsr-inspect-features"

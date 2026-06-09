@@ -60,7 +60,7 @@ def smart_cleanup():
             except Exception as e:
                 print(f"   ❌ Failed to delete {shard_name}: {e}")
                 
-    print(f"✨ Cleanup Complete!")
+    print("✨ Cleanup Complete!")
     print(f"   - Deleted {deleted_count} shards from {CROPPED_ROOT}")
     # print(f"   - Reclaimed approx {reclaimed_inodes} inodes (files).")
     volume.commit()
