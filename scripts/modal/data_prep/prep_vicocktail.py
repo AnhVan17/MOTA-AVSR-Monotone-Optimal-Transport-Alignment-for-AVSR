@@ -13,9 +13,10 @@ DATA_ROOT = "/mnt/vicocktail_raw"
 OUTPUT_ROOT = "/mnt/vicocktail_features"
 
 # Modal pins the GPU on the function decorator at app-build (import) time — it can't be
-# overridden per-call in this client. So pick it from an env var, default L40S (strong GPU
-# for batched face-detection). Override with: PROCESS_GPU=T4 modal run ...
-PROCESS_GPU = os.environ.get("PROCESS_GPU", "L40S")
+# overridden per-call in this client. Default T4: face-align is CPU-bound (SFD postprocess in
+# numpy + per-frame FAN loop), so measured L40S+batching gave ~0% on the 80% bottleneck and
+# only sped up Whisper (~16% overall) for 3.3× cost. Override with: PROCESS_GPU=L40S modal run ...
+PROCESS_GPU = os.environ.get("PROCESS_GPU", "T4")
 
 # --- Image ---
 # Make `src` importable. Locally: add repo root (for app-build). In Modal containers the
@@ -234,17 +235,17 @@ def extract_features_shard(subset_name):
 
 @app.local_entrypoint()
 def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0,
-         batch_size: int = 5, detect_batch: int = 32):
+         batch_size: int = 5, detect_batch: int = 1):
     """
     Args:
         action: 'download', 'download_one', 'process' (raw→frame shards), 'inspect', 'inspect_output'
         subset: 'train' / 'avvn-test-000000' / 'test_snr_...' / 'all' (filter keyword on raw shards)
         max_samples: >0 limits total samples for a cheap smoke (process action).
         batch_size: số raw shard mỗi container (process). ≤5 để không chạm timeout 6h (~40min/shard).
-        detect_batch: số frame gom qua SFD/GPU 1 lần (process). DEFAULT 32 = gom hết detect-frame
-            của 1 clip vào 1 call (tận dụng GPU). Hạ xuống nếu OOM với frame độ phân giải cao.
+        detect_batch: số frame gom qua SFD/GPU 1 lần (process). DEFAULT 1 (per-frame) — đo thực tế
+            cho thấy batching KHÔNG giúp (face-align CPU-bound). Để >1 chỉ khi thử nghiệm.
 
-    GPU: mặc định L40S (xem PROCESS_GPU ở đầu file); chạy rẻ bằng `PROCESS_GPU=T4 modal run ...`.
+    GPU: mặc định T4 (xem PROCESS_GPU ở đầu file); thử L40S bằng `PROCESS_GPU=L40S modal run ...`.
     """
     if action == "download_one":
         print(f"Smoke test: downloading ONE shard '{subset}'...")
