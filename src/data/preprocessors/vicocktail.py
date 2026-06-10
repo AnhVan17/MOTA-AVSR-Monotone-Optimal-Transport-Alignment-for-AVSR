@@ -93,7 +93,7 @@ class ViCocktailPreprocessor(BasePreprocessor):
             os.makedirs(output_dir, exist_ok=True)
             
         # load models
-        self._load_models()
+        self._load_models(load_visual=False)  # frame pipeline stores crops; ResNet runs at train time
 
         # Create the face-alignment video processor ONCE and reuse it. Creating it per sample
         # re-inits + re-compiles the model (~1 min each) → catastrophically slow on full data.

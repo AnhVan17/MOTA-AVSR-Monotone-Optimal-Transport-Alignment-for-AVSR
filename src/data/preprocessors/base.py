@@ -498,11 +498,17 @@ class BasePreprocessor(ABC):
         self.audio_extractor = None
         logger.info(f"Initialized {self.__class__.__name__} (Lazy Load)")
 
-    def _load_models(self):
-        """Helper to load heavy models only when needed"""
-        if self.visual_extractor is None:
-            logger.info(f"Loading Extractors on {PreprocessConfig.DEVICE}...")
-            self.visual_extractor = VisualFeatureExtractor()
+    def _load_models(self, load_visual: bool = True):
+        """Load heavy models only when needed.
+
+        load_visual=False skips the ResNet (VisualFeatureExtractor) — used by the frame-based
+        pipeline, which stores raw crops and runs ResNet at train time. Skipping it saves ~VRAM,
+        important when several preprocess workers share one GPU (multiprocessing).
+        """
+        if self.audio_extractor is None:
+            logger.info(f"Loading extractors on {PreprocessConfig.DEVICE} (visual={load_visual})...")
+            if load_visual:
+                self.visual_extractor = VisualFeatureExtractor()
             self.audio_extractor = AudioFeatureExtractor()
             logger.info("Models Loaded.")
 
