@@ -61,31 +61,56 @@ def download_one_shard(shard):
 @app.function(
     image=image,
     volumes={"/mnt": volume},
+)
+def list_raw_shards(subset):
+    """List raw .tar shard basenames matching `subset` (or 'all'), sorted — for batching."""
+    import glob
+    files = glob.glob(f"{DATA_ROOT}/**/*.tar", recursive=True)
+    names = sorted(
+        os.path.basename(f) for f in files
+        if subset == "all" or subset in os.path.basename(f)
+    )
+    return names
+
+
+@app.function(
+    image=image,
+    volumes={"/mnt": volume},
     gpu="T4",          # rẻ nhất; bottleneck là face-align per-frame (launch-bound), GPU to KHÔNG giúp (đã đo)
     cpu=4,             # giải mã video (ffmpeg/opencv)
     memory=16384,      # 16 GB — headroom cho frame buffer + models
-    timeout=14400,     # 4h — đủ cho MỘT raw shard + biên an toàn
+    timeout=21600,     # 6h — đủ cho 1 batch (≤5 raw shard × ~40min) + biên an toàn
 )
-def process_data(subset_name, limit_ratio: float = 1.0, max_samples: int = 0):
+def process_data(subset_name, shard_names=None, out_tag=None, limit_ratio: float = 1.0, max_samples: int = 0):
     """Raw .tar shards → feature WebDataset shards (.tar of audio/visual/text).
 
-    max_samples>0 limits total samples (cheap smoke). Output: OUTPUT_ROOT/vicocktail-{subset}-%06d.tar.
+    shard_names: nếu set, chỉ xử lý đúng các raw shard này (1 batch). out_tag: nhãn output
+    riêng cho batch để counter %06d KHÔNG đè batch khác. Resume: bỏ qua nếu _meta.json đã có.
+    max_samples>0 limits total samples (cheap smoke).
     """
     sys.path.append("/root")
     from src.data.preprocessors.vicocktail import ViCocktailPreprocessor
+    from src.data.shards import _meta_path
 
-    print(f"Processing (WebDataset shards) in {DATA_ROOT}, subset='{subset_name}', max_samples={max_samples or 'ALL'}...")
+    tag = out_tag or subset_name
+    shard_pattern = f"{OUTPUT_ROOT}/vicocktail-{tag}-%06d.tar"
+
+    # Resume: a finished batch wrote its _meta.json → skip on rerun (idempotent).
+    if os.path.exists(_meta_path(shard_pattern)):
+        print(f"SKIP batch '{tag}' — already done ({_meta_path(shard_pattern)} exists).")
+        return f"SKIP '{tag}' (already done)"
+
+    print(f"Processing batch '{tag}' in {DATA_ROOT}: {shard_names or subset_name} (max_samples={max_samples or 'ALL'})...")
     processor = ViCocktailPreprocessor(data_root=DATA_ROOT, use_precropped=False)
-
-    shard_pattern = f"{OUTPUT_ROOT}/vicocktail-{subset_name}-%06d.tar"
     processor.run(
         shard_pattern=shard_pattern,
         filter_keyword=subset_name,
+        shard_names=shard_names,
         limit_ratio=limit_ratio,
         max_samples=(max_samples or None),
     )
     volume.commit()
-    return f"Sharded subset '{subset_name}' → {shard_pattern}"
+    return f"Sharded batch '{tag}' → {shard_pattern}"
 
 @app.function(
     image=image,
@@ -198,12 +223,13 @@ def extract_features_shard(subset_name):
 
 
 @app.local_entrypoint()
-def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0):
+def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0, batch_size: int = 5):
     """
     Args:
         action: 'download', 'download_one', 'process' (raw→feature shards), 'inspect', 'inspect_output'
         subset: 'train' / 'avvn-test-000000' / 'test_snr_...' / 'all' (filter keyword on raw shards)
         max_samples: >0 limits total samples for a cheap smoke (process action).
+        batch_size: số raw shard mỗi container (process). ≤5 để không chạm timeout 6h (~40min/shard).
     """
     if action == "download_one":
         print(f"Smoke test: downloading ONE shard '{subset}'...")
@@ -214,11 +240,20 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
         download_shard_subset.remote(subset)
 
     elif action == "process":
-        # Raw .tar shards → feature WebDataset shards (face-alignment crop + Whisper/ResNet extract).
-        print(f"Starting GPU sharded processing for '{subset}' (ratio={limit_ratio}, max_samples={max_samples or 'ALL'})...")
-        result = process_data.remote(subset, limit_ratio, max_samples)
-        print(result)
-        
+        # Raw .tar shards → feature WebDataset shards. Chia thành batch ≤batch_size shard,
+        # mỗi batch = 1 container (commit volume riêng + resume-skip). Gọi TUẦN TỰ (không song song).
+        names = list_raw_shards.remote(subset)
+        if not names:
+            print(f"No raw shards match subset='{subset}' in {DATA_ROOT}.")
+            return
+        batches = [names[i:i + batch_size] for i in range(0, len(names), batch_size)]
+        print(f"Processing '{subset}': {len(names)} raw shards → {len(batches)} batch(es) of ≤{batch_size}.")
+        for bi, batch in enumerate(batches):
+            tag = f"{subset}-b{bi:03d}"
+            print(f"\n[{bi + 1}/{len(batches)}] batch '{tag}': {batch}")
+            result = process_data.remote(subset, batch, tag, limit_ratio, max_samples)
+            print(f"   → {result}")
+
     elif action == "inspect":
          print(f"Inspecting data for {subset}...")
          inspect_data.remote(subset)

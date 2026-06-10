@@ -36,20 +36,27 @@ class ViCocktailPreprocessor(BasePreprocessor):
             
         return metadata
 
-    def run(self, output_manifest="vicocktail_manifest.jsonl", output_dir=None, extract_features=True, limit_ratio: float = 1.0, filter_keyword: str = None, max_samples: int = None, shard_pattern=None, shard_maxcount: int = 2000):
+    def run(self, output_manifest="vicocktail_manifest.jsonl", output_dir=None, extract_features=True, limit_ratio: float = 1.0, filter_keyword: str = None, max_samples: int = None, shard_pattern=None, shard_maxcount: int = 2000, shard_names: List[str] = None):
         """
         Overridden run method to handle WebDataset logic.
 
         max_samples: nếu set, dừng sau khi xử đủ N mẫu (tiện cho preprocess thử local).
+        shard_names: nếu set, CHỈ xử lý các raw shard có basename nằm trong list (chạy theo batch).
         """
         logger.info("Collecting .tar shards...")
         metadata = self.collect_metadata()
         logger.info(f"   Found {len(metadata)} shards (Total).")
-        
+
         # 1. Keyword Filter (e.g. 'train' vs 'test')
         if filter_keyword and filter_keyword != 'all':
             metadata = [m for m in metadata if filter_keyword in os.path.basename(m['full_path'])]
             logger.info(f"   [Filter '{filter_keyword}'] Keeping {len(metadata)} shards.")
+
+        # 1b. Explicit shard list (batch mode): keep only the named raw shards.
+        if shard_names:
+            wanted = set(shard_names)
+            metadata = [m for m in metadata if os.path.basename(m['full_path']) in wanted]
+            logger.info(f"   [Explicit shards] Keeping {len(metadata)}/{len(wanted)} requested: {sorted(wanted)[:3]}...")
 
         if not metadata: return
         
