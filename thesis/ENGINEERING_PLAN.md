@@ -1,10 +1,10 @@
 # Engineering Plan — MOTA-v2 AVSR (Section 0 → C)
 
-**Ngày lập:** 2026-06-09
-**Trạng thái codebase:** Phase-1 + Phase-2 trial đã chạy thành công trên Modal (exit 0). 3 critical bug + HIGH/MEDIUM của CODE_REVIEW đã fix. mediapipe đã được thay hoàn toàn bằng face-alignment (SFD+FAN).
-**Phạm vi tài liệu:** kế hoạch kỹ thuật chi tiết cho 4 khối công việc — **0 (Clean/Refactor/Legacy)**, **A (Main Experiments)**, **B (RGF + NRQE)**, **C (Visual Frontend E2E)**.
+**Lập:** 2026-06-09 · **Cập nhật:** 2026-06-10
+**Trạng thái codebase (2026-06-10):** `main` = **trunk sạch** — Section 0 (cleanup) + Modal-fix đã merge (PR #19, #20), CI xanh. Phase-1 + Phase-2 trial OK trên Modal (exit 0). 3 critical + HIGH/MED bug đã fix. mediapipe → face-alignment (SFD+FAN). `tests/`(14 pass) + CI ruff đã có.
+**Phạm vi:** kế hoạch kỹ thuật cho 4 khối — **0 (Clean/Refactor) ✅ DONE**, **A (Main Experiments)**, **B (RGF + NRQE)**, **C (Visual Frontend E2E)**.
 
-> Bổ trợ cho [THESIS_WORK_PLAN.md](THESIS_WORK_PLAN.md) (phân công + lịch 30 ngày). File này tập trung **kỹ thuật**: làm gì, sửa file nào, vì sao, tiêu chí nghiệm thu.
+> **Từ giai đoạn này, implement THEO file này.** Bổ trợ [THESIS_WORK_PLAN.md](THESIS_WORK_PLAN.md) (phân công + lịch 30 ngày). File này tập trung **kỹ thuật**: làm gì, sửa file nào, vì sao, nghiệm thu. Mọi quyết định thiết kế ở Section B đã **research/verify** (Modal limits, Switch Transformer, Gumbel) — không đoán, không tự fill.
 
 ---
 
@@ -23,7 +23,9 @@
 
 ---
 
-# Section 0 — Clean / Refactor / Remove Legacy
+# Section 0 — Clean / Refactor / Remove Legacy ✅ DONE (2026-06-10)
+
+> ✅ **HOÀN TẤT** — merged vào `main` (PR #19 + Đợt 1 follow-up). Kết quả: rename `FaceMesh→MouthCropper`; xoá `preprocess.py`/`cropper.py`/`KeyFrameExtractor` (dead); gỡ EGL chết; fix bug `import wandb` (F821); reconcile ABSTRACT §2.3; dựng `tests/` (14 pass) + CI ruff (src+tests+scripts). **0 tên legacy, 0 alias** — _lưu ý: §0.1 từng khuyên "giữ alias tạm" nhưng alias đã được thêm rồi GỠ ở Đợt 1 vì vô dụng (code cũ import theo module-path cũ vẫn vỡ)._ Phần dưới giữ làm **record**.
 
 **Mục tiêu:** xoá nợ kỹ thuật + dấu vết mediapipe + dựng nền test/CI trước khi xây module mới. Rẻ, nhanh, giảm rủi ro cho A/B/C.
 
@@ -88,8 +90,10 @@ Ruột đã là face-alignment (SFD+FAN) nhưng tên vẫn "FaceMesh" → gây h
 
 ### A.1. Chặn đường: giới hạn file của Modal Volume
 
-- Modal Volume giới hạn **262,144 files/thư mục**. ViCocktail full sinh ra hàng triệu file `.pt` rời (mỗi sample 1 file feature) → **vượt giới hạn** (đây chính là lỗi bạn từng gặp).
-- Nguồn: Modal docs (Volume limits) — cần verify lại số chính xác lúc làm.
+- Modal Volume có **2 giới hạn** (đã verify, [Modal Volumes docs](https://modal.com/docs/guide/volumes)):
+  - **Hard cap: 500,000 inodes/Volume** (files+dirs+symlinks) → vượt = `ENOSPC`. ← đây chính là "~500k" bạn từng đụng.
+  - **Tối đa 262,144 files/thư mục đơn.** Khuyến nghị vận hành: **< 50,000** files (latency attach scale tuyến tính theo số file).
+- ViCocktail full sinh **hàng triệu** file `.pt` rời (mỗi sample 1 feature) → **phá cả hai giới hạn** → bắt buộc gom file.
 
 ### A.2. Giải pháp: WebDataset tar shards (gom file)
 
@@ -144,46 +148,65 @@ Ruột đã là face-alignment (SFD+FAN) nhưng tên vẫn "FaceMesh" → gây h
 
 **Mục tiêu:** hiện thực đóng góp cốt lõi #3 trong ABSTRACT. Tấn công pain point **"double degradation"** (§2.1): khi cả audio & visual đều suy giảm, fusion mù làm hỏng thêm.
 
-### B.1. Cơ sở học thuật (đã research — bám sát, không bịa)
+> Đây là **bản tổng hợp merit-based**: neo `docs/thesis_proposal.tex` để lấy spec cụ thể, nhưng **cố ý lệch ở những chỗ proposal sai/dở cho low-resource + 30 ngày** (ghi rõ ở B.0 để khi viết thesis KHÔNG bê nguyên lỗi của proposal).
 
-- **RGF**: _"Improving Noise Robust AVSR via Router-Gated Cross-Modal Feature Fusion"_ (arXiv 2508.18734, 2025) — router down-weight audio token không tin cậy theo **token-level acoustic corruption score**, gated cross-attention; **giảm WER 16.5–42.7%** so AV-HuBERT. → reference trực tiếp cho RGF.
+### B.0. Quyết định thiết kế & chỗ lệch proposal.tex (ĐỌC TRƯỚC)
+
+| Quyết định           | Chốt                                                                                                    | Theo / Lệch                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Routing**          | **Gumbel-Softmax annealed** → chọn 1 trong 3 expert RIÊNG; độ-cứng τ là config (mềm→sắc)                | ✅ theo proposal §442 (vì annealing = ổn định sớm + expressive muộn; hơn hẳn soft-weighted-sum)                        |
+| **Fusion expert**    | RGF **thay** QualityGate làm Stage-1; nhưng **tái dùng QualityGate** làm computation của mode "fusion"  | 🔀 tổng hợp (cấu trúc "thay" của proposal + ý reuse code đã validate)                                                  |
+| **Anti-collapse**    | **Load-balancing loss** `α·N·Σ fᵢ·Pᵢ` (Switch Transformer)                                              | ⚠️ **LỆCH proposal** — Eq.490 per-chunk entropy KHÔNG chặn được global mode-collapse                                   |
+| **NRQE uncertainty** | **cross-modal consistency (cosine, 1×)** là chính; learned log-variance optional. **BỎ MC-dropout K=5** | ⚠️ **LỆCH proposal** — Eq.565 tốn 5× forward (xung đột ~2GiB) + đo nhầm loại uncertainty                               |
+| **SyncPreprocessor** | **DEFER → future work** (không vào critical path)                                                       | ⚠️ **LỆCH ABSTRACT** — trùng chức năng alignment của MQOT-v2 + under-specified (common-space chicken-egg, lag T_a≠T_v) |
+
+→ Trụ chắc cho 30 ngày: **MQOT-v2 (đã xong) + RGF**. NRQE = bổ trợ rẻ; Sync = nếu còn thời gian.
+
+### B.1. Cơ sở
+
+**Spec cụ thể (điểm xuất phát, KHÔNG citable — draft nội bộ):** `docs/thesis_proposal.tex` §392–582 (chunk K=15, Gumbel temp, 3-mode processing, unbalanced Sinkhorn). Có chỗ sai → xem B.0.
+
+**Kiểm chứng đúng đắn + nguồn citable cho thesis:**
+
+- **RGF**: _"Improving Noise Robust AVSR via Router-Gated Cross-Modal Feature Fusion"_ (arXiv 2508.18734, 2025) — router down-weight audio token không tin cậy theo token-level corruption score, gated cross-attention; **−16.5..42.7% WER** so AV-HuBERT.
+- **Routing/MoE**: MoHAVE (2502.10447), MoE-AVSR (2409.12370); **load-balancing** = Switch Transformer (Fedus 2021).
+- **NRQE**: consistency — AUAF / QMF (2404.18947, 2306.02050); uncertainty — Kendall & Gal 2017 (heteroscedastic aleatoric).
+- **Gumbel-Softmax**: Jang et al. 2017 (anneal `τ(t)=max(τ_min, τ₀·γ^t)`).
 - **MoHAVE** (2502.10447): two-layer routing (inter-/intra-modal experts).
 - **Robust AVSR with MoE** (2409.12370): router chọn sparse experts theo token.
 - **NRQE / uncertainty**: AUAF (MC-Dropout + cross-modal cosine consistency), QMF (Quality-aware Multimodal Fusion), survey _Multimodal Fusion on Low-quality Data_ (2404.18947), _Provable Dynamic Fusion_ (2306.02050).
 
 ### B.2. NRQE — `src/models/fusion/nrqe.py` (mới)
 
-**Vai trò:** ước lượng độ tin cậy **theo chunk** cho từng modality.
+**Vai trò:** ước lượng độ tin cậy **theo chunk** cho từng modality (`q_a, q_v ∈ [0,1]`).
 
-- **Input:** `audio_feat [B,Ta,d]`, `visual_feat [B,Tv,d]` (sau projection).
-- **Output:** `q_a, q_v ∈ [0,1]` theo chunk (per-chunk reliability).
-- **Cơ chế (2 thành phần, theo AUAF):**
-  1. _Uncertainty_: head dự đoán log-variance (hoặc MC-dropout) cho mỗi modality → độ bất định cao = tin cậy thấp.
-  2. _Cross-modal consistency_: cosine similarity giữa audio/visual đã chiếu chung không gian → nhất quán cao = cả hai đáng tin.
-- **Chunking:** gộp T thành chunk kích thước `nrqe.chunk_size` (config). Không hardcode.
+- **Input:** `audio_feat`, `visual_feat` **sau projection** (cùng `d_model` → tránh chicken-egg "common space" mà Sync gặp ở Stage 0.5).
+- **Cross-modal consistency (CHÍNH, rẻ 1×):** cosine `a_t·v_t / (‖a_t‖‖v_t‖)` per-frame rồi pool theo chunk. Cao = 2 modality cùng encode 1 event = đáng tin (đo _data quality_).
+- **Uncertainty (OPTIONAL, 1×):** learned log-variance head (heteroscedastic, Kendall & Gal 2017). **BỎ MC-dropout K=5** của proposal Eq.565 — tốn 5× forward (xung đột ~2GiB) + đo _model_ uncertainty trong khi fusion cần _data_ quality.
+- **Chunking:** `nrqe.chunk_size` qua config (proposal K=15). Không hardcode.
 
 ### B.3. RGF — `src/models/fusion/router_gate.py` (mới)
 
-**Vai trò:** router theo chunk chọn 1 trong 3 chế độ.
+**Router theo chunk → chọn 1 trong 3 expert XỬ LÝ KHÁC NHAU (Gumbel-Softmax).** Đây mới là cái mới thật — KHÔNG phải weighted-sum 3 nhánh (= QualityGate trá hình).
 
-- **Input:** `audio_feat`, `visual_feat`, `q_a`, `q_v` (từ NRQE).
-- **Router:** MLP nhỏ → logits 3 chế độ → **softmax (soft routing)** `w = [w_audio, w_visual, w_fusion]` per chunk.
-  - _audio-dominant_: dùng audio_feat
-  - _visual-dominant_: dùng visual_feat
-  - _fusion_: dùng QualityGate/cross-attn fusion
-- **Output:** `out = w_a·audio + w_v·visual + w_f·fusion` (kết hợp mềm; tránh hard-argmax lúc train để gradient mượt).
-- **Regularization:** entropy reg trên `w` (tránh router sụp về 1 chế độ) — trọng số qua config.
+- **Chunk encode:** gộp K frame (config) → context `a_ctx, v_ctx` (bottleneck MLP).
+- **Router:** MLP nhận `[a_ctx; v_ctx; q_a; q_v]` → logits ∈ ℝ³ → **Gumbel-Softmax(τ)**. τ anneal `max(τ_min, τ₀·γ^t)` (config): cao lúc đầu (mềm, gradient chảy đủ 3 expert) → thấp cuối (gần one-hot, expressive). Inference: argmax → chỉ tính expert được chọn (rẻ).
+- **3 expert:**
+  - _audio-dominant_: `σ(g_a) ⊙ audio`
+  - _visual-dominant_: `σ(g_v) ⊙ visual`
+  - _fusion_: **tái dùng QualityGate** (code đã validate phase-1/2)
+- **Output:** ghép các chunk → `[B, T, d]`.
 
 ### B.4. Tích hợp vào `src/models/mota.py`
 
-- Vị trí: **Stage 1.5**, ngay sau QualityGate (coarse) và trước MQOT (fine). RGF nhận output QualityGate làm nhánh "fusion".
-- **Cờ config `use_rgf`** (giống `use_mqot`): mặc định `false` → **không phá** Phase-1/Phase-2 hiện có.
-- Additive: chỉ khởi tạo NRQE/RGF khi `use_rgf=true`.
+- RGF **THAY QualityGate làm Stage 1** (KHÔNG chồng 2 lớp gating). Khi `use_rgf=true`: Stage-1 = RGF, trong đó QualityGate bị "giáng" thành computation của mode _fusion_. MQOT (Stage 2) giữ nguyên.
+- **Cờ `use_rgf`** (giống `use_mqot`): mặc định `false` → Phase-1/Phase-2 hiện tại KHÔNG đổi (additive, chỉ init RGF/NRQE khi bật).
 
-### B.5. Loss
+### B.5. Loss — anti-collapse ĐÚNG cách
 
-- Tận dụng `quality_loss_weight` đã có trong [phase2_mqot.yaml](../configs/phase2_mqot.yaml).
-- Aux loss tuỳ chọn: khuyến khích `q_a` thấp khi audio nhiễu (nếu có SNR label) — hoặc self-supervised qua consistency. Mặc định tắt; bật qua config.
+- **Load-balancing (Switch Transformer, Fedus 2021):** `L_bal = λ_bal · N · Σ_{i=1}^{N=3} f_i · P_i` — `f_i` = tỷ lệ chunk route vào mode _i_, `P_i` = router-prob trung bình của mode _i_. Minimize → 3 mode dùng ~đều → **chặn global mode-collapse THẬT**. `λ_bal ~ 1e-2` qua config.
+- **Vì sao KHÔNG per-chunk entropy** (proposal Eq.490): entropy per-chunk không tách được "hard routing" và "no-collapse" → không ngăn router luôn chọn 1 mode across batch.
+- Optional aux: `quality_loss_weight` (có sẵn [phase2_mqot.yaml](../configs/phase2_mqot.yaml)).
 
 ### B.6. TDD (viết test trước)
 
@@ -196,7 +219,12 @@ Ruột đã là face-alignment (SFD+FAN) nhưng tên vẫn "FaceMesh" → gây h
 
 - A0 full; **A4: −RGF/NRQE** (so với full) — chứng minh đóng góp.
 
-**Rủi ro & giảm thiểu:** router khó hội tụ → (1) warm-start từ checkpoint Phase-2, (2) soft routing + entropy reg, (3) train router sau khi backbone ổn định. Nếu không converge → **cắt theo §9.2 Option A** (giữ MQOT, bỏ RGF) — và **báo cáo trung thực = vẫn là kết quả**.
+### B.8. SyncPreprocessor — DEFER (không làm giai đoạn này)
+
+- **Lý do (B.0):** trùng alignment thời gian với MQOT-v2 (unbalanced Sinkhorn đã xử lý `T_a≠T_v`); under-specified (cross-correlation cần common-space nhưng đặt TRƯỚC projection; lag mơ hồ khi `T_a=300, T_v=75`). Payoff WER biên thấp, rủi ro cao.
+- **Hệ quả tài liệu:** ABSTRACT nên hạ "3 đóng góp lõi" → **2 lõi (RGF + MQOT-v2) + Sync là hướng mở rộng** (cập nhật khi đụng ABSTRACT).
+
+**Rủi ro & giảm thiểu:** router khó hội tụ → (1) warm-start từ checkpoint Phase-2, (2) Gumbel anneal mềm→sắc + load-balancing loss, (3) train router sau khi backbone ổn định. Nếu không converge → **cắt theo §9.2 Option A** (giữ MQOT, bỏ RGF) — và **báo cáo trung thực = vẫn là kết quả**.
 
 **Nghiệm thu Section B:**
 
@@ -255,15 +283,15 @@ Ruột đã là face-alignment (SFD+FAN) nhưng tên vẫn "FaceMesh" → gây h
 ## Phụ thuộc & trình tự
 
 ```
-Section 0 (1-2 ngày, rẻ)
-   └─> Section A  (WebDataset shards) ──┐ (shards tái dùng cho C)
-   └─> Section B  (RGF/NRQE, độc lập)   │
-                                        └─> Section C (optional, sau A&B)
+Section 0 ✅ DONE ──┬─> Section A  (WebDataset shards) ──┐ (shards tái dùng cho C)
+                    └─> Section B  (RGF/NRQE, độc lập)   │
+                                                         └─> Section C (optional, sau A&B)
 ```
 
-- **B độc lập với A**: RGF/NRQE chạy được trên feature precomputed → có thể làm song song với A.
+- **NEXT = Section A** (ưu tiên 1: ra số) — bắt đầu bằng WebDataset sharding để vượt giới hạn 500k inodes.
+- **B độc lập với A**: RGF/NRQE chạy được trên feature precomputed → có thể làm song song.
 - **C phụ thuộc A**: cần raw-frame shards.
-- Map milestone THESIS_WORK_PLAN: 0+A → M1/M4 (số liệu); B → M3 (module mới); C → ablation bổ sung.
+- Map milestone THESIS_WORK_PLAN: A → M4 (số liệu); B → M3 (module mới); C → ablation bổ sung.
 
 ## Rủi ro & cắt scope (theo THESIS_WORK_PLAN §9.2)
 
