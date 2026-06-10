@@ -12,6 +12,11 @@ VOLUME_NAME = "avsr-volume"
 DATA_ROOT = "/mnt/vicocktail_raw"
 OUTPUT_ROOT = "/mnt/vicocktail_features"
 
+# Modal pins the GPU on the function decorator at app-build (import) time — it can't be
+# overridden per-call in this client. So pick it from an env var, default L40S (strong GPU
+# for batched face-detection). Override with: PROCESS_GPU=T4 modal run ...
+PROCESS_GPU = os.environ.get("PROCESS_GPU", "L40S")
+
 # --- Image ---
 # Make `src` importable. Locally: add repo root (for app-build). In Modal containers the
 # script is flattened to /root and src lives at /root/src, so parents[N] would be out of range.
@@ -76,7 +81,7 @@ def list_raw_shards(subset):
 @app.function(
     image=image,
     volumes={"/mnt": volume},
-    gpu="T4",          # default rẻ nhất; override L40S qua --gpu (.with_options) khi bật detect_batch
+    gpu=PROCESS_GPU,   # default L40S (env PROCESS_GPU=T4 để rẻ); mạnh để batch face-detection
     cpu=4,             # giải mã video (ffmpeg/opencv)
     memory=16384,      # 16 GB — headroom cho frame buffer + models
     timeout=21600,     # 6h — đủ cho 1 batch (≤5 raw shard × ~40min) + biên an toàn
@@ -229,7 +234,7 @@ def extract_features_shard(subset_name):
 
 @app.local_entrypoint()
 def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0,
-         batch_size: int = 5, detect_batch: int = 32, gpu: str = "L40S"):
+         batch_size: int = 5, detect_batch: int = 32):
     """
     Args:
         action: 'download', 'download_one', 'process' (raw→frame shards), 'inspect', 'inspect_output'
@@ -238,7 +243,8 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
         batch_size: số raw shard mỗi container (process). ≤5 để không chạm timeout 6h (~40min/shard).
         detect_batch: số frame gom qua SFD/GPU 1 lần (process). DEFAULT 32 = gom hết detect-frame
             của 1 clip vào 1 call (tận dụng GPU). Hạ xuống nếu OOM với frame độ phân giải cao.
-        gpu: GPU cho process. DEFAULT 'L40S' (mạnh, đi cùng detect_batch cao). 'T4' nếu muốn rẻ.
+
+    GPU: mặc định L40S (xem PROCESS_GPU ở đầu file); chạy rẻ bằng `PROCESS_GPU=T4 modal run ...`.
     """
     if action == "download_one":
         print(f"Smoke test: downloading ONE shard '{subset}'...")
@@ -251,19 +257,17 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
     elif action == "process":
         # Raw .tar shards → frame WebDataset shards. Chia thành batch ≤batch_size shard,
         # mỗi batch = 1 container (commit volume riêng + resume-skip). Gọi TUẦN TỰ (không song song).
-        # gpu override per-run qua .with_options (decorator mặc định T4).
-        proc = process_data.with_options(gpu=gpu) if gpu != "T4" else process_data
         names = list_raw_shards.remote(subset)
         if not names:
             print(f"No raw shards match subset='{subset}' in {DATA_ROOT}.")
             return
         batches = [names[i:i + batch_size] for i in range(0, len(names), batch_size)]
         print(f"Processing '{subset}': {len(names)} raw shards → {len(batches)} batch(es) of ≤{batch_size} "
-              f"(gpu={gpu}, detect_batch={detect_batch}).")
+              f"(gpu={PROCESS_GPU}, detect_batch={detect_batch}).")
         for bi, batch in enumerate(batches):
             tag = f"{subset}-b{bi:03d}"
             print(f"\n[{bi + 1}/{len(batches)}] batch '{tag}': {batch}")
-            result = proc.remote(subset, batch, tag, limit_ratio, max_samples, detect_batch)
+            result = process_data.remote(subset, batch, tag, limit_ratio, max_samples, detect_batch)
             print(f"   → {result}")
 
     elif action == "inspect":
