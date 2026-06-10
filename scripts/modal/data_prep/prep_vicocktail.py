@@ -31,18 +31,32 @@ volume = get_volume()
     image=image,
     volumes={"/mnt": volume},
     timeout=3600, # 1 hour per shard download usually enough
-    secrets=[modal.Secret.from_name("hf-token")] # Ensure HF_TOKEN is available
+    secrets=[modal.Secret.from_name("huggingface-secret")] # Provides HF_TOKEN (gated/rate-limit)
 )
 def download_shard_subset(subset):
     sys.path.append("/root")
-    from scripts.data_prep.download_vicocktail import download_vicocktail
-    
+    from scripts.local.data.download_vicocktail import download_vicocktail
+
     print(f"Downloading subset: {subset}")
     # Download to raw folder
     subsets_arg = [subset] if subset != 'all' else None
     download_vicocktail(DATA_ROOT, subsets=subsets_arg)
     volume.commit()
     return f"Downloaded {subset}"
+
+@app.function(
+    image=image,
+    volumes={"/mnt": volume},
+    timeout=1800,
+    secrets=[modal.Secret.from_name("huggingface-secret")]
+)
+def download_one_shard(shard):
+    """Download ONE .tar shard — cheap re-fetch smoke test. E.g. shard='avvn-train-000098.tar'."""
+    sys.path.append("/root")
+    from scripts.local.data.download_vicocktail import download_single_shard
+    path = download_single_shard(DATA_ROOT, shard)
+    volume.commit()
+    return f"Downloaded shard to {path}"
 
 @app.function(
     image=image,
@@ -199,10 +213,14 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
         action: 'download', 'process' (features), 'inspect', 'inspect_output'
         subset: 'train' or 'test_snr_...' or 'all'
     """
-    if action == "download":
+    if action == "download_one":
+        print(f"Smoke test: downloading ONE shard '{subset}'...")
+        print(download_one_shard.remote(subset))
+
+    elif action == "download":
         print(f"Starting Download for {subset}...")
         download_shard_subset.remote(subset)
-        
+
     elif action == "process":
         # Note: 'process' in this context now means GPU Feature Extraction
         # The CPU mouth-crop step is handled by 'prep_face_crop.py' (kept separate for env isolation)
