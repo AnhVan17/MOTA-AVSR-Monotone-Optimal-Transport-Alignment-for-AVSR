@@ -37,6 +37,11 @@ def build_dataloader(
     """
     data_cfg = config.get('data', config)
 
+    # --- WebDataset (sharded .tar) path: streaming IterableDataset ---
+    # Solves Modal Volume inode limit; see thesis/WEBDATASET_DESIGN.md.
+    if str(data_cfg.get('format', 'jsonl')).lower() == 'webdataset':
+        return _build_webdataset_loader(config, data_cfg, tokenizer, mode)
+
     # --- Manifest path ---
     manifest_key = f"{mode}_manifest"
     manifest_path = data_cfg.get(manifest_key)
@@ -99,6 +104,43 @@ def build_dataloader(
     )
 
     return loader
+
+
+def _build_webdataset_loader(config: Dict, data_cfg: Dict, tokenizer, mode: str) -> DataLoader:
+    """Build a DataLoader over WebDataset feature shards (streaming IterableDataset).
+
+    Config keys (under 'data'): format: webdataset, and either '<mode>_shards' or 'shards'
+    (brace/glob pattern or list of .tar paths). Worker-splitting is handled by WebDataset
+    (single-node, multi-worker safe). Shuffle is internal (train only) — no DataLoader shuffle.
+    """
+    from src.data.shards import build_webdataset
+
+    shards = data_cfg.get(f"{mode}_shards") or data_cfg.get("shards")
+    if shards is None:
+        raise ValueError(
+            f"data.format=webdataset but no '{mode}_shards' or 'shards' in config"
+        )
+
+    is_train = (mode == "train")
+    logger.info(f"Building WebDataset DataLoader [{mode}] from shards={shards}")
+
+    dataset = build_webdataset(
+        shards,
+        tokenizer,
+        train=is_train,
+        augment=is_train,
+        aug_cfg=config.get("augmentation", None),
+        shuffle_buffer=data_cfg.get("shuffle_buffer", 1000),
+    )
+
+    pad_id = getattr(tokenizer, "eot_token_id", 50257)
+    return DataLoader(
+        dataset,
+        batch_size=data_cfg.get("batch_size", 32),
+        num_workers=data_cfg.get("num_workers", 2),
+        collate_fn=Collator(pad_id),
+        pin_memory=torch.cuda.is_available(),
+    )
 
 
 def _detect_dataset_type(manifest_path: str) -> str:

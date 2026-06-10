@@ -31,12 +31,12 @@ volume = get_volume()
     image=image,
     volumes={"/mnt": volume},
     timeout=3600, # 1 hour per shard download usually enough
-    secrets=[modal.Secret.from_name("hf-token")] # Ensure HF_TOKEN is available
+    secrets=[modal.Secret.from_name("huggingface-secret")] # Provides HF_TOKEN (gated/rate-limit)
 )
 def download_shard_subset(subset):
     sys.path.append("/root")
-    from scripts.data_prep.download_vicocktail import download_vicocktail
-    
+    from scripts.local.data.download_vicocktail import download_vicocktail
+
     print(f"Downloading subset: {subset}")
     # Download to raw folder
     subsets_arg = [subset] if subset != 'all' else None
@@ -47,40 +47,45 @@ def download_shard_subset(subset):
 @app.function(
     image=image,
     volumes={"/mnt": volume},
-    timeout=7200, # 2 hours processing time
-    gpu="T4" # GPU needed for face-alignment + Whisper
+    timeout=1800,
+    secrets=[modal.Secret.from_name("huggingface-secret")]
 )
-def process_data(subset_name, limit_ratio: float = 1.0):
+def download_one_shard(shard):
+    """Download ONE .tar shard — cheap re-fetch smoke test. E.g. shard='avvn-train-000098.tar'."""
+    sys.path.append("/root")
+    from scripts.local.data.download_vicocktail import download_single_shard
+    path = download_single_shard(DATA_ROOT, shard)
+    volume.commit()
+    return f"Downloaded shard to {path}"
+
+@app.function(
+    image=image,
+    volumes={"/mnt": volume},
+    gpu="T4",          # rẻ nhất; bottleneck là face-align per-frame (launch-bound), GPU to KHÔNG giúp (đã đo)
+    cpu=4,             # giải mã video (ffmpeg/opencv)
+    memory=16384,      # 16 GB — headroom cho frame buffer + models
+    timeout=14400,     # 4h — đủ cho MỘT raw shard + biên an toàn
+)
+def process_data(subset_name, limit_ratio: float = 1.0, max_samples: int = 0):
+    """Raw .tar shards → feature WebDataset shards (.tar of audio/visual/text).
+
+    max_samples>0 limits total samples (cheap smoke). Output: OUTPUT_ROOT/vicocktail-{subset}-%06d.tar.
+    """
     sys.path.append("/root")
     from src.data.preprocessors.vicocktail import ViCocktailPreprocessor
-    
-    # We assume data is downloaded in DATA_ROOT
-    # But ViCocktailPreprocessor scans widely. 
-    # To be safe, we point it to DATA_ROOT
-    
-    print(f"Processing data in {DATA_ROOT}...")
-    
-    # Init Preprocessor
-    processor = ViCocktailPreprocessor(
-        data_root=DATA_ROOT,
-        use_precropped=False # It's raw in tar
-    )
-    
-    # Run
-    # Output manifest
-    manifest_name = f"vicocktail_{subset_name}.jsonl"
-    manifest_path = f"/mnt/manifests/{manifest_name}"
-    os.makedirs("/mnt/manifests", exist_ok=True)
-    
+
+    print(f"Processing (WebDataset shards) in {DATA_ROOT}, subset='{subset_name}', max_samples={max_samples or 'ALL'}...")
+    processor = ViCocktailPreprocessor(data_root=DATA_ROOT, use_precropped=False)
+
+    shard_pattern = f"{OUTPUT_ROOT}/vicocktail-{subset_name}-%06d.tar"
     processor.run(
-        output_manifest=manifest_path, 
-        output_dir=OUTPUT_ROOT,
+        shard_pattern=shard_pattern,
+        filter_keyword=subset_name,
         limit_ratio=limit_ratio,
-        filter_keyword=subset_name
+        max_samples=(max_samples or None),
     )
-    
     volume.commit()
-    return f"Processed {subset_name}. Manifest: {manifest_path}"
+    return f"Sharded subset '{subset_name}' → {shard_pattern}"
 
 @app.function(
     image=image,
@@ -193,28 +198,25 @@ def extract_features_shard(subset_name):
 
 
 @app.local_entrypoint()
-def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0):
+def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0):
     """
     Args:
-        action: 'download', 'process' (features), 'inspect', 'inspect_output'
-        subset: 'train' or 'test_snr_...' or 'all'
+        action: 'download', 'download_one', 'process' (raw→feature shards), 'inspect', 'inspect_output'
+        subset: 'train' / 'avvn-test-000000' / 'test_snr_...' / 'all' (filter keyword on raw shards)
+        max_samples: >0 limits total samples for a cheap smoke (process action).
     """
-    if action == "download":
+    if action == "download_one":
+        print(f"Smoke test: downloading ONE shard '{subset}'...")
+        print(download_one_shard.remote(subset))
+
+    elif action == "download":
         print(f"Starting Download for {subset}...")
         download_shard_subset.remote(subset)
-        
+
     elif action == "process":
-        # Note: 'process' in this context now means GPU Feature Extraction
-        # The CPU mouth-crop step is handled by 'prep_face_crop.py' (kept separate for env isolation)
-        print(f"Starting GPU Processing (face-alignment + Audio) for {subset} (Ratio: {limit_ratio})...")
-        # Reuse process_data for the GPU-heavy part (face-alignment + Extraction)
-        # Note: Previous 'process_data' in this file was CPU-based or assumed raw tars.
-        # Wait, lines 64-98 define process_data with GPU=T4.
-        # It calls ViCocktailPreprocessor.
-        # So we should call process_data, NOT extract_features_shard (which reads cropped folders).
-        # extract_features_shard is legacy or for 2-step pipeline.
-        
-        result = process_data.remote(subset, limit_ratio)
+        # Raw .tar shards → feature WebDataset shards (face-alignment crop + Whisper/ResNet extract).
+        print(f"Starting GPU sharded processing for '{subset}' (ratio={limit_ratio}, max_samples={max_samples or 'ALL'})...")
+        result = process_data.remote(subset, limit_ratio, max_samples)
         print(result)
         
     elif action == "inspect":

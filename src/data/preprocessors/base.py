@@ -9,6 +9,10 @@ import io
 import soundfile as sf
 import warnings
 warnings.filterwarnings("ignore", message="No faces were detected.")
+# Silence harmless upstream deprecation/info warnings (HF resume_download, torch TypedStorage/cuDNN).
+warnings.filterwarnings("ignore", message=".*resume_download.*")
+warnings.filterwarnings("ignore", message=".*TypedStorage is deprecated.*")
+warnings.filterwarnings("ignore", message=".*Applied workaround for CuDNN.*")
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 from torch.utils.data import DataLoader, Dataset
@@ -31,6 +35,8 @@ class PreprocessConfig:
     # Video Params
     FPS = 25
     VIDEO_FRAMES = 375 # 15s * 25fps
+    DETECT_EVERY = 15  # face-alignment detect mỗi N frame; frame giữa tái dùng bbox (perf; môi ổn định ~0.6s)
+    FACE_DETECTOR = 'sfd'  # 'sfd' (chính xác); 'blazeface' miss ~50% trên ViCocktail → đừng dùng
     
     # System Params
     BATCH_SIZE = 4096      # Aggressively increased for A100
@@ -54,11 +60,13 @@ class VideoProcessor:
                 face_alignment.LandmarksType.TWO_D,
                 device=self.device,
                 flip_input=False,
-                face_detector='sfd'
+                face_detector=PreprocessConfig.FACE_DETECTOR
             )
             logger.info("face-alignment initialized successfully.")
 
     def process(self, video_path):
+        import time
+        _t = time.perf_counter()
         cap = cv2.VideoCapture(video_path)
         frames = []
         try:
@@ -68,33 +76,36 @@ class VideoProcessor:
                 frames.append(frame)
         finally:
             cap.release()
-            
+        self._prof_decode = getattr(self, "_prof_decode", 0.0) + (time.perf_counter() - _t)
+        self._n_frames = getattr(self, "_n_frames", 0) + len(frames)
+
         if not frames: return None
 
+        _t = time.perf_counter()
         processed_frames = []
         prev_bbox = None
-        
+
         for i, frame in enumerate(frames):
-            
             if self.use_precropped:
                 # If pre-cropped, the whole frame is the mouth.
                 crop = frame
             else:
-                # Optimization: Detect every 5 frames
-                if i % 5 == 0 or prev_bbox is None:
+                # Detect every DETECT_EVERY frames, propagate bbox in between (môi ổn định ~0.6s)
+                if i % PreprocessConfig.DETECT_EVERY == 0 or prev_bbox is None:
                     crop, prev_bbox = self.extract_mouth(frame, None)
                 else:
                     crop, prev_bbox = self.extract_mouth(frame, prev_bbox)
-            
+
             # Resize to 88x88 (SOTA standard)
-            crop = cv2.resize(crop, (PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE)) 
-            
+            crop = cv2.resize(crop, (PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE))
+
             # Convert to grayscale (SOTA: grayscale for lip reading)
             if PreprocessConfig.USE_GRAYSCALE:
                 crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
             else:
                 crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
             processed_frames.append(crop)
+        self._prof_detect = getattr(self, "_prof_detect", 0.0) + (time.perf_counter() - _t)
 
         # Convert to tensor
         frames_np = np.array(processed_frames)
@@ -159,9 +170,13 @@ class VideoProcessor:
 
         # Detect face landmarks using face-alignment
         try:
+            import time as _time
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            _t = _time.perf_counter()
             landmarks = self.fa.get_landmarks_from_image(rgb)
-            
+            self._prof_fa = getattr(self, "_prof_fa", 0.0) + (_time.perf_counter() - _t)
+            self._n_det = getattr(self, "_n_det", 0) + 1
+
             if landmarks is not None and len(landmarks) > 0:
                 # 68-point landmarks: mouth = [48:68]
                 mouth_points = landmarks[0][48:68]
@@ -430,14 +445,18 @@ class BasePreprocessor(ABC):
         """Should return list of dict: {'full_path', 'rel_path', 'text'}"""
         pass
 
-    def run(self, output_manifest="manifest.jsonl", output_dir=None, extract_features=True):
+    def run(self, output_manifest="manifest.jsonl", output_dir=None, extract_features=True,
+            shard_pattern=None, shard_maxcount=2000):
         """
         Run preprocessing pipeline.
-        
+
         Args:
-            output_manifest: Path to save the manifest file
+            output_manifest: Path to save the manifest file (loose-.pt mode only)
             output_dir: Directory to save .pt feature files. If None, saves next to input videos.
             extract_features: Whether to extract and save features
+            shard_pattern: if set (e.g. '.../vicocktail-train-%06d.tar'), write WebDataset
+                .tar shards instead of loose .pt + manifest (solves Volume inode limit).
+            shard_maxcount: samples per shard before rotating.
         """
         logger.info("Collecting metadata...")
         metadata = self.collect_metadata()
@@ -450,6 +469,16 @@ class BasePreprocessor(ABC):
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
             logger.info(f"   Output directory: {output_dir}")
+
+        # WebDataset sharded output (optional). Packs samples into .tar shards.
+        shard_sink, n_sharded = None, 0
+        if shard_pattern:
+            import webdataset as wds
+            shard_dir = os.path.dirname(shard_pattern)
+            if shard_dir:
+                os.makedirs(shard_dir, exist_ok=True)
+            shard_sink = wds.ShardWriter(shard_pattern, maxcount=shard_maxcount)
+            logger.info(f"   WebDataset shards: {shard_pattern} (maxcount={shard_maxcount})")
 
         # Optimization: Create a map for O(1) access
         metadata_map = {m['full_path']: m for m in metadata}
@@ -514,24 +543,44 @@ class BasePreprocessor(ABC):
                             'path': video_path # Original path
                         }
                         
-                        # Determine save path
-                        if self.output_dir:
-                            # Use output_dir, preserve relative structure
-                            rel_path = item.get('rel_path', os.path.basename(video_path))
-                            pt_filename = os.path.splitext(rel_path)[0] + ".pt"
-                            save_path = os.path.join(self.output_dir, pt_filename)
-                            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                        if shard_sink is not None:
+                            # WebDataset shard: one .tar sample (key + .pth/.txt fields)
+                            key = str(item_id).replace(".", "_").replace("/", "_")
+                            shard_sink.write({
+                                "__key__": key,
+                                "audio.pth": audio_feats.cpu(),
+                                "visual.pth": visual_feats.cpu(),
+                                "txt": text,
+                            })
+                            n_sharded += 1
                         else:
-                            # Save next to original video
-                            save_path = video_path.replace(".mpg", ".pt").replace(".mp4", ".pt").replace(".webm", ".pt")
-                        
-                        torch.save(save_dict, save_path)
+                            # Legacy loose .pt output
+                            if self.output_dir:
+                                rel_path = item.get('rel_path', os.path.basename(video_path))
+                                pt_filename = os.path.splitext(rel_path)[0] + ".pt"
+                                save_path = os.path.join(self.output_dir, pt_filename)
+                                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                            else:
+                                save_path = video_path.replace(".mpg", ".pt").replace(".mp4", ".pt").replace(".webm", ".pt")
+                            torch.save(save_dict, save_path)
                         count += 1
                         
                     except Exception as e:
                         logger.error(f"FAILED {video_path}: {e}")
 
-        # 2. Save Manifest
+        # 2a. WebDataset mode: close shards + write _meta.json (no jsonl manifest).
+        if shard_sink is not None:
+            shard_sink.close()
+            from src.data.shards import _pattern_to_glob, _meta_path
+            import glob as _glob
+            num_shards = len(_glob.glob(_pattern_to_glob(shard_pattern)))
+            with open(_meta_path(shard_pattern), 'w', encoding='utf-8') as f:
+                json.dump({"num_samples": n_sharded, "num_shards": num_shards}, f)
+            logger.info(f"Wrote {n_sharded} samples → {num_shards} shards; meta={_meta_path(shard_pattern)}")
+            logger.info("Done!")
+            return
+
+        # 2b. Save Manifest (loose-.pt mode)
         logger.info(f"Saving manifest to {output_manifest}...")
         with open(output_manifest, 'w', encoding='utf-8') as f:
             for item in metadata:

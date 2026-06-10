@@ -20,7 +20,8 @@ jobs:
           python -m pip install --upgrade pip
           # torch CPU wheel keeps the job light (no CUDA download)
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install "numpy<2" pyyaml pytest ruff
+          # webdataset is needed: src/data/shards.py imports it (tests/unit/test_webdataset.py)
+          pip install "numpy<2" pyyaml pytest ruff webdataset==0.2.79
 
       - name: Ruff (syntax errors + pyflakes)
         run: ruff check src tests scripts
