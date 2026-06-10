@@ -43,8 +43,7 @@ def smart_cleanup():
     print(f"🔍 Found {len(feature_dirs)} completed feature shards.")
     
     deleted_count = 0
-    reclaimed_inodes = 0
-    
+
     for shard_name in tqdm(feature_dirs):
         cropped_path = os.path.join(CROPPED_ROOT, shard_name)
         

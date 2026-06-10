@@ -161,9 +161,3 @@ class MouthCropper:
         for frame in frames:
             out.write(frame)
         out.release()
-
-
-# Deprecated aliases (this module was formerly `facemesh.py` with MediaPipe FaceMesh names).
-# Kept so any in-flight teammate branch importing the old symbols still works. Remove once migrated.
-FaceMeshPreprocessor = MouthCropper
-FaceMeshConfig = CropConfig

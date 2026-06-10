@@ -84,8 +84,5 @@ FACE_CROP_IMAGE = (
     .add_local_dir("src", remote_path="/root/src")
 )
 
-# Deprecated alias (was named after MediaPipe FaceMesh; now face-alignment). Remove after migration.
-CPU_FACEMESH_IMAGE = FACE_CROP_IMAGE
-
 # Plain image for volume management / debug utilities (no heavy deps).
 BARE_IMAGE = _base()

@@ -23,7 +23,7 @@ jobs:
           pip install "numpy<2" pyyaml pytest ruff
 
       - name: Ruff (syntax errors + pyflakes)
-        run: ruff check src tests
+        run: ruff check src tests scripts
 
       - name: Pytest (unit)
         run: pytest tests/ -q
