@@ -36,6 +36,7 @@ class PreprocessConfig:
     FPS = 25
     VIDEO_FRAMES = 375 # 15s * 25fps
     DETECT_EVERY = 15  # face-alignment detect mỗi N frame; frame giữa tái dùng bbox (perf; môi ổn định ~0.6s)
+    DETECT_BATCH = 1   # số detect-frame gom qua SFD/GPU 1 lần. 1 = per-frame (cũ). >1 = batch (tận dụng L40S)
     FACE_DETECTOR = 'sfd'  # 'sfd' (chính xác); 'blazeface' miss ~50% trên ViCocktail → đừng dùng
     
     # System Params
@@ -94,14 +95,31 @@ class VideoProcessor:
 
         _t = time.perf_counter()
         processed_frames = []
-        prev_bbox = None
 
+        # Batched detection path (DETECT_BATCH>1): detect-frames go through the GPU in batches,
+        # then every frame uses the nearest preceding detection's bbox. Utilizes big GPUs (L40S).
+        batched = (not self.use_precropped) and PreprocessConfig.DETECT_BATCH > 1
+        bbox_at = None
+        if batched:
+            detect_indices = list(range(0, len(frames), PreprocessConfig.DETECT_EVERY))
+            bbox_at = self._detect_bboxes_batched(frames, detect_indices)
+
+        prev_bbox = None
         for i, frame in enumerate(frames):
             if self.use_precropped:
                 # If pre-cropped, the whole frame is the mouth.
                 crop = frame
+            elif batched:
+                # Use the most recent detect-frame's bbox; fall back to center crop if none yet.
+                if bbox_at.get(i) is not None:
+                    prev_bbox = bbox_at[i]
+                if prev_bbox is not None:
+                    x1, y1, x2, y2 = prev_bbox
+                    crop = frame[y1:y2, x1:x2]
+                else:
+                    crop = self._center_crop(frame)
             else:
-                # Detect every DETECT_EVERY frames, propagate bbox in between (môi ổn định ~0.6s)
+                # Per-frame: detect every DETECT_EVERY frames, propagate bbox in between.
                 if i % PreprocessConfig.DETECT_EVERY == 0 or prev_bbox is None:
                     crop, prev_bbox = self.extract_mouth(frame, None)
                 else:
@@ -175,10 +193,33 @@ class VideoProcessor:
         looped = video_tensor.repeat(repeats, 1, 1, 1) # Repeat along T
         return looped[:target_frames]
 
-    def extract_mouth(self, frame, prev_bbox=None):
-        """Mouth cropping logic using face-alignment (GPU-native)"""
+    def _bbox_from_landmarks(self, landmarks_68, h, w):
+        """68-point landmarks ``[68,2]`` → mouth-centered crop bbox ``(x1,y1,x2,y2)`` or None."""
+        if landmarks_68 is None or len(landmarks_68) < 68:
+            return None
+        mouth = landmarks_68[48:68]  # mouth points
+        xs, ys = mouth[:, 0], mouth[:, 1]
+        cx, cy = int(np.mean(xs)), int(np.mean(ys))
+        radius = max(
+            int((max(xs) - min(xs)) * 1.8) // 2,
+            int((max(ys) - min(ys)) * 1.8) // 2,
+            PreprocessConfig.IMAGE_SIZE // 2,
+        )
+        x1, y1 = max(0, cx - radius), max(0, cy - radius)
+        x2, y2 = min(w, cx + radius), min(h, cy + radius)
+        return (x1, y1, x2, y2) if (x1 < x2 and y1 < y2) else None
+
+    def _center_crop(self, frame):
+        """Fallback when no face is detected."""
         h, w = frame.shape[:2]
-        
+        cy, cx = h // 2, w // 2
+        r = PreprocessConfig.IMAGE_SIZE // 2
+        return frame[max(0, cy - r):min(h, cy + r), max(0, cx - r):min(w, cx + r)]
+
+    def extract_mouth(self, frame, prev_bbox=None):
+        """Mouth cropping logic using face-alignment (GPU-native), one frame at a time."""
+        h, w = frame.shape[:2]
+
         # If previous bbox exists, try fast crop
         if prev_bbox is not None:
             x1, y1, x2, y2 = prev_bbox
@@ -195,36 +236,44 @@ class VideoProcessor:
             self._n_det = getattr(self, "_n_det", 0) + 1
 
             if landmarks is not None and len(landmarks) > 0:
-                # 68-point landmarks: mouth = [48:68]
-                mouth_points = landmarks[0][48:68]
-                
-                xs = mouth_points[:, 0]
-                ys = mouth_points[:, 1]
-                
-                cx, cy = int(np.mean(xs)), int(np.mean(ys))
-                
-                # Calculate crop radius
-                radius = max(
-                    int((max(xs) - min(xs)) * 1.8) // 2,
-                    int((max(ys) - min(ys)) * 1.8) // 2,
-                    PreprocessConfig.IMAGE_SIZE // 2
-                )
-                
-                y1 = max(0, cy - radius)
-                y2 = min(h, cy + radius)
-                x1 = max(0, cx - radius)
-                x2 = min(w, cx + radius)
-                
-                bbox = (x1, y1, x2, y2)
-                return frame[y1:y2, x1:x2], bbox
+                bbox = self._bbox_from_landmarks(landmarks[0], h, w)
+                if bbox is not None:
+                    x1, y1, x2, y2 = bbox
+                    return frame[y1:y2, x1:x2], bbox
         except Exception as e:
             logger.warning(f"face-alignment failed for frame (fallback to center crop): {e}")
-            pass
-            
+
         # Fallback: Crop center
-        cy, cx = h // 2, w // 2
-        r = PreprocessConfig.IMAGE_SIZE // 2
-        return frame[max(0, cy-r):min(h, cy+r), max(0, cx-r):min(w, cx+r)], None
+        return self._center_crop(frame), None
+
+    def _detect_bboxes_batched(self, frames, detect_indices):
+        """Run SFD detection on the detect-frames in GPU batches (utilizes big GPUs).
+
+        Batches ``DETECT_BATCH`` full frames through ``get_landmarks_from_batch`` (which
+        batches the SFD detector — the per-frame bottleneck — then loops light FAN).
+        Returns ``{frame_idx: bbox or None}`` for the detect-frames only.
+        """
+        import time as _time
+        h, w = frames[0].shape[:2]
+        bs = max(1, PreprocessConfig.DETECT_BATCH)
+        bboxes = {}
+        for s in range(0, len(detect_indices), bs):
+            chunk = detect_indices[s:s + bs]
+            # get_landmarks_from_batch wants [B, C, H, W] RGB 0-255 (it flips to BGR + de-means).
+            rgb = np.stack([cv2.cvtColor(frames[j], cv2.COLOR_BGR2RGB) for j in chunk])  # [B,H,W,C]
+            batch_t = torch.from_numpy(rgb).permute(0, 3, 1, 2).contiguous()             # [B,C,H,W] uint8
+            _t = _time.perf_counter()
+            try:
+                lm_list = self.fa.get_landmarks_from_batch(batch_t)
+            except Exception as e:
+                logger.warning(f"batched face-alignment failed (fallback center crop for chunk): {e}")
+                lm_list = None
+            self._prof_fa = getattr(self, "_prof_fa", 0.0) + (_time.perf_counter() - _t)
+            self._n_det = getattr(self, "_n_det", 0) + len(chunk)
+            for k, j in enumerate(chunk):
+                lm = lm_list[k] if (lm_list is not None and k < len(lm_list) and len(lm_list[k]) >= 68) else None
+                bboxes[j] = self._bbox_from_landmarks(lm, h, w)
+        return bboxes
 
 # --- 2. AUDIO PROCESSOR (Whisper) ---
 

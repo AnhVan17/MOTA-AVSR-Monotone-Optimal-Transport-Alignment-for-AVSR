@@ -76,21 +76,25 @@ def list_raw_shards(subset):
 @app.function(
     image=image,
     volumes={"/mnt": volume},
-    gpu="T4",          # rẻ nhất; bottleneck là face-align per-frame (launch-bound), GPU to KHÔNG giúp (đã đo)
+    gpu="T4",          # default rẻ nhất; override L40S qua --gpu (.with_options) khi bật detect_batch
     cpu=4,             # giải mã video (ffmpeg/opencv)
     memory=16384,      # 16 GB — headroom cho frame buffer + models
     timeout=21600,     # 6h — đủ cho 1 batch (≤5 raw shard × ~40min) + biên an toàn
 )
-def process_data(subset_name, shard_names=None, out_tag=None, limit_ratio: float = 1.0, max_samples: int = 0):
-    """Raw .tar shards → feature WebDataset shards (.tar of audio/visual/text).
+def process_data(subset_name, shard_names=None, out_tag=None, limit_ratio: float = 1.0, max_samples: int = 0, detect_batch: int = 1):
+    """Raw .tar shards → frame WebDataset shards (video frames + Whisper audio feats + text).
 
     shard_names: nếu set, chỉ xử lý đúng các raw shard này (1 batch). out_tag: nhãn output
     riêng cho batch để counter %06d KHÔNG đè batch khác. Resume: bỏ qua nếu _meta.json đã có.
-    max_samples>0 limits total samples (cheap smoke).
+    detect_batch>1: gom nhiều frame qua SFD/GPU 1 lần (tận dụng L40S). max_samples>0 = smoke.
     """
     sys.path.append("/root")
     from src.data.preprocessors.vicocktail import ViCocktailPreprocessor
+    from src.data.preprocessors.base import PreprocessConfig
     from src.data.shards import _meta_path
+
+    # GPU face-detection batch size (1 = per-frame; >1 batches SFD detect for big GPUs).
+    PreprocessConfig.DETECT_BATCH = detect_batch
 
     tag = out_tag or subset_name
     shard_pattern = f"{OUTPUT_ROOT}/vicocktail-{tag}-%06d.tar"
@@ -100,7 +104,8 @@ def process_data(subset_name, shard_names=None, out_tag=None, limit_ratio: float
         print(f"SKIP batch '{tag}' — already done ({_meta_path(shard_pattern)} exists).")
         return f"SKIP '{tag}' (already done)"
 
-    print(f"Processing batch '{tag}' in {DATA_ROOT}: {shard_names or subset_name} (max_samples={max_samples or 'ALL'})...")
+    print(f"Processing batch '{tag}' in {DATA_ROOT}: {shard_names or subset_name} "
+          f"(max_samples={max_samples or 'ALL'}, detect_batch={detect_batch})...")
     processor = ViCocktailPreprocessor(data_root=DATA_ROOT, use_precropped=False)
     processor.run(
         shard_pattern=shard_pattern,
@@ -223,13 +228,17 @@ def extract_features_shard(subset_name):
 
 
 @app.local_entrypoint()
-def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0, batch_size: int = 5):
+def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0,
+         batch_size: int = 5, detect_batch: int = 32, gpu: str = "L40S"):
     """
     Args:
-        action: 'download', 'download_one', 'process' (raw→feature shards), 'inspect', 'inspect_output'
+        action: 'download', 'download_one', 'process' (raw→frame shards), 'inspect', 'inspect_output'
         subset: 'train' / 'avvn-test-000000' / 'test_snr_...' / 'all' (filter keyword on raw shards)
         max_samples: >0 limits total samples for a cheap smoke (process action).
         batch_size: số raw shard mỗi container (process). ≤5 để không chạm timeout 6h (~40min/shard).
+        detect_batch: số frame gom qua SFD/GPU 1 lần (process). DEFAULT 32 = gom hết detect-frame
+            của 1 clip vào 1 call (tận dụng GPU). Hạ xuống nếu OOM với frame độ phân giải cao.
+        gpu: GPU cho process. DEFAULT 'L40S' (mạnh, đi cùng detect_batch cao). 'T4' nếu muốn rẻ.
     """
     if action == "download_one":
         print(f"Smoke test: downloading ONE shard '{subset}'...")
@@ -240,18 +249,21 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
         download_shard_subset.remote(subset)
 
     elif action == "process":
-        # Raw .tar shards → feature WebDataset shards. Chia thành batch ≤batch_size shard,
+        # Raw .tar shards → frame WebDataset shards. Chia thành batch ≤batch_size shard,
         # mỗi batch = 1 container (commit volume riêng + resume-skip). Gọi TUẦN TỰ (không song song).
+        # gpu override per-run qua .with_options (decorator mặc định T4).
+        proc = process_data.with_options(gpu=gpu) if gpu != "T4" else process_data
         names = list_raw_shards.remote(subset)
         if not names:
             print(f"No raw shards match subset='{subset}' in {DATA_ROOT}.")
             return
         batches = [names[i:i + batch_size] for i in range(0, len(names), batch_size)]
-        print(f"Processing '{subset}': {len(names)} raw shards → {len(batches)} batch(es) of ≤{batch_size}.")
+        print(f"Processing '{subset}': {len(names)} raw shards → {len(batches)} batch(es) of ≤{batch_size} "
+              f"(gpu={gpu}, detect_batch={detect_batch}).")
         for bi, batch in enumerate(batches):
             tag = f"{subset}-b{bi:03d}"
             print(f"\n[{bi + 1}/{len(batches)}] batch '{tag}': {batch}")
-            result = process_data.remote(subset, batch, tag, limit_ratio, max_samples)
+            result = proc.remote(subset, batch, tag, limit_ratio, max_samples, detect_batch)
             print(f"   → {result}")
 
     elif action == "inspect":
