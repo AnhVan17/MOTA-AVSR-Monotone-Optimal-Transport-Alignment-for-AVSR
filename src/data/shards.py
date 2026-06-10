@@ -41,11 +41,12 @@ def write_feature_shards(
     output_pattern: str,
     maxcount: int = 2000,
 ) -> Dict:
-    """Write feature samples to WebDataset ``.tar`` shards.
+    """Write samples to WebDataset ``.tar`` shards (frame-based schema).
 
     Args:
-        samples: iterable of dicts with keys ``id`` (str), ``audio`` (Tensor[T_a, 768]),
-            ``visual`` (Tensor[T_v, 512]), ``text`` (str).
+        samples: iterable of dicts with keys ``id`` (str), ``audio`` (Tensor[T_a, 768]
+            Whisper features), ``video`` (Tensor[T, H, W, C] uint8 mouth-crop frames),
+            ``text`` (str).
         output_pattern: shard path pattern with one printf field,
             e.g. ``/mnt/.../vicocktail-train-%06d.tar``.
         maxcount: max samples per shard before rotating to a new shard.
@@ -65,9 +66,9 @@ def write_feature_shards(
             key = str(s["id"]).replace(".", "_").replace("/", "_")
             sink.write({
                 "__key__": key,
-                "audio.pth": s["audio"].cpu(),   # .pth → torch.save (WebDataset encoder)
-                "visual.pth": s["visual"].cpu(),
-                "txt": s["text"],                # str → utf-8
+                "audio.pth": s["audio"].cpu().half(),  # [T_a, 768] fp16 (Whisper, frozen)
+                "video.pth": s["video"].cpu(),          # [T, H, W, C] uint8 frames
+                "txt": s["text"],                       # str → utf-8
             })
             n += 1
 
@@ -122,14 +123,18 @@ def build_webdataset(
     def decode(sample: Dict) -> Dict:
         raw_txt = sample["txt"]
         text = raw_txt.decode("utf-8") if isinstance(raw_txt, (bytes, bytearray)) else raw_txt
+        # audio: Whisper features stored fp16 → upcast to float for the model.
         audio = torch.load(io.BytesIO(sample["audio.pth"])).float()
-        visual = torch.load(io.BytesIO(sample["visual.pth"])).float()
+        # visual: raw mouth-crop frames stored uint8 [T, H, W, C] → float [T, C, H, W] in [0,1].
+        # ResNet runs inside the model (forward_backbones), so we hand it frames, not features.
+        frames = torch.load(io.BytesIO(sample["video.pth"]))
+        visual = frames.permute(0, 3, 1, 2).float() / 255.0
         if augmenter is not None:
             audio, visual = augmenter(audio, visual)
         target = torch.tensor(tokenizer.encode(text), dtype=torch.long)
         return {
             "audio": audio,
-            "visual": visual,
+            "visual": visual,          # [T, C, H, W] frames (model's frozen ResNet encodes them)
             "target": target,
             "text": text,
             "rel_path": sample["__key__"],

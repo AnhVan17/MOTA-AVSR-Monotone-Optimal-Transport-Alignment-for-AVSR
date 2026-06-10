@@ -69,7 +69,13 @@ class VideoProcessor:
             )
             logger.info("face-alignment initialized successfully.")
 
-    def process(self, video_path):
+    def process(self, video_path, return_uint8_frames=False):
+        """Decode video → mouth-crop frames.
+
+        return_uint8_frames=True: return raw crops [T, H, W, C] uint8 (unpadded) for
+        frame-based shards (augment + ResNet happen at train time). Otherwise return the
+        normalized, loop-padded float tensor [T, C, H, W] (legacy feature path).
+        """
         import time
         _t = time.perf_counter()
         cap = cv2.VideoCapture(video_path)
@@ -114,6 +120,12 @@ class VideoProcessor:
 
         # Convert to tensor
         frames_np = np.array(processed_frames)
+
+        # Frame-based shards: return raw uint8 crops [T, H, W, C], unpadded.
+        # Normalization + loop-pad + augmentation are deferred to train-time decode.
+        if return_uint8_frames:
+            return torch.from_numpy(frames_np)  # uint8, [T, H, W, C] (RGB) or [T, H, W] (gray)
+
         if PreprocessConfig.USE_GRAYSCALE:
             # Grayscale: (T, H, W) -> (T, 1, H, W)
             video_tensor = torch.tensor(frames_np, dtype=torch.float32).unsqueeze(1) / 255.0

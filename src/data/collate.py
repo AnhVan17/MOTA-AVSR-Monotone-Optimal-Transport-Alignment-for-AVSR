@@ -32,7 +32,9 @@ class Collator:
         for i, a in enumerate(audio_list):
             audio_mask[i, :a.size(0)] = True
         
-        # 2. Process Visual (variable length)
+        # 2. Process Visual (variable length along T).
+        # pad_sequence pads dim 0 (T) for any trailing shape: features [T,512] → [B,T_max,512],
+        # raw frames [T,C,H,W] → [B,T_max,C,H,W]. Both handled without special-casing.
         visual_list = [s['visual'] for s in batch]
         visual_batch = pad_sequence(visual_list, batch_first=True, padding_value=0.0)
         
@@ -62,7 +64,7 @@ class Collator:
         
         return {
             'audio': audio_batch,       # (B, T_a_max, 768)
-            'visual': visual_batch,     # (B, T_v_max, 512)
+            'visual': visual_batch,     # (B, T_v_max, C, H, W) frames, or (B, T_v_max, D) features
             'audio_mask': audio_mask,   # (B, T_a_max)
             'visual_mask': visual_mask, # (B, T_v_max)
             'target': target_batch,     # (B, L_max)

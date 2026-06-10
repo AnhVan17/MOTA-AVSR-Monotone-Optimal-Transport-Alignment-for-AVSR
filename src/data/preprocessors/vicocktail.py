@@ -6,7 +6,7 @@ import webdataset as wds
 from tqdm import tqdm
 from typing import List, Dict
 
-from .base import BasePreprocessor, PreprocessConfig
+from .base import BasePreprocessor
 from src.utils.logging_utils import setup_logger
 
 logger = setup_logger(__name__)
@@ -111,7 +111,7 @@ class ViCocktailPreprocessor(BasePreprocessor):
 
         manifest_entries = []
         import time
-        t_crop = t_visual = t_audio = 0.0  # PROFILE: stage timing accumulators (seconds)
+        t_crop = t_audio = 0.0  # PROFILE: stage timing accumulators (seconds)
         
         for s_idx, shard_item in enumerate(metadata):
             tar_path = shard_item['full_path']
@@ -171,35 +171,27 @@ class ViCocktailPreprocessor(BasePreprocessor):
                     with open(temp_vid_path, "wb") as f:
                         f.write(sample[video_key])
                         
-                    # 3. Process Visual — reuse hoisted `vp` (PROFILE: t_crop = decode + face-align crop)
+                    # 3. Process Visual — raw mouth-crop FRAMES (uint8), NOT ResNet features.
+                    # ResNet runs at train time so we can augment frames + optionally fine-tune (E2E).
+                    # PROFILE: t_crop = decode + face-align crop (the real bottleneck).
                     _t0 = time.perf_counter()
-                    video_tensor = vp.process(temp_vid_path)  # [T, C, H, W]
+                    video_frames = vp.process(temp_vid_path, return_uint8_frames=True)  # [T, H, W, C] uint8
                     t_crop += time.perf_counter() - _t0
 
-                    if video_tensor is None:
+                    if video_frames is None:
                         os.remove(temp_vid_path)
                         continue
 
-                    # Extract Visual features (PROFILE: t_visual = ResNet)
-                    _t0 = time.perf_counter()
-                    video_tensor = video_tensor.to(PreprocessConfig.DEVICE)
-                    visual_feats_list = []
-                    with torch.no_grad():
-                        for j in range(0, len(video_tensor), PreprocessConfig.BATCH_SIZE):
-                            batch = video_tensor[j : j + PreprocessConfig.BATCH_SIZE]
-                            visual_feats_list.append(self.visual_extractor(batch).cpu())
-                    visual_feats = torch.cat(visual_feats_list, dim=0)
-                    t_visual += time.perf_counter() - _t0
-
-                    # 4. Process Audio (PROFILE: t_audio = decode audio + Whisper)
+                    # 4. Process Audio — Whisper features, kept frozen (stored fp16 to halve size).
+                    # PROFILE: t_audio = decode audio + Whisper
                     _t0 = time.perf_counter()
                     audio_feats = self.audio_extractor.process_file(temp_vid_path)
                     t_audio += time.perf_counter() - _t0
-                    
+
                     # Cleanup
                     os.remove(temp_vid_path)
-                    
-                    if audio_feats is None: 
+
+                    if audio_feats is None:
                         audio_feats = torch.zeros((1, 768))
 
                     # 5. Save — WebDataset shard OR loose .pt
@@ -207,14 +199,14 @@ class ViCocktailPreprocessor(BasePreprocessor):
                         key_s = str(key).replace(".", "_").replace("/", "_")
                         shard_sink.write({
                             "__key__": key_s,
-                            "audio.pth": audio_feats.cpu(),
-                            "visual.pth": visual_feats.cpu(),
+                            "audio.pth": audio_feats.cpu().half(),   # [T_a, 768] fp16
+                            "video.pth": video_frames.cpu(),         # [T, H, W, C] uint8
                             "txt": text,
                         })
                         n_sharded += 1
                     else:
                         save_dict = {
-                            'id': key, 'visual': visual_feats, 'audio': audio_feats,
+                            'id': key, 'video': video_frames, 'audio': audio_feats,
                             'text': text, 'path': f"{shard_name}/{key}.mp4",
                         }
                         if self.output_dir:
@@ -243,7 +235,6 @@ class ViCocktailPreprocessor(BasePreprocessor):
         logger.info(
             f"PROFILE ({_n} samples): "
             f"crop(decode+face-align)={t_crop:.1f}s ({t_crop/_n:.2f}/sample) | "
-            f"visual(ResNet)={t_visual:.1f}s ({t_visual/_n:.2f}/sample) | "
             f"audio(Whisper)={t_audio:.1f}s ({t_audio/_n:.2f}/sample)"
         )
         logger.info(

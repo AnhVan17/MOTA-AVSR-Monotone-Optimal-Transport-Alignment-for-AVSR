@@ -87,5 +87,34 @@ class FeatureAugmenter:
             
         return out
 
+    def augment_frames(self, frames: torch.Tensor) -> torch.Tensor:
+        """Spatial augmentation for raw mouth-crop frames.
+
+        Args:
+            frames: [T, C, H, W] float in [0,1].
+
+        Applies (per clip): random horizontal flip + random temporal frame masking.
+        Standard for lip-reading frontends (Auto-AVSR style); richer than feature-level aug.
+        """
+        if torch.rand(1) > self.visual_prob:
+            return frames
+
+        out = frames
+        # 1. Horizontal flip — flip the whole clip consistently (width = last dim).
+        if torch.rand(1) < 0.5:
+            out = torch.flip(out, dims=[-1])
+
+        # 2. Temporal frame masking — zero a short run of frames (occlusion/dropout).
+        if self.visual_mask_frames > 0:
+            T = out.shape[0]
+            t = int(np.random.randint(0, self.visual_mask_frames))
+            if t > 0:
+                t0 = int(np.random.randint(0, max(1, T - t)))
+                out = out.clone()
+                out[t0:t0 + t] = 0
+        return out
+
     def __call__(self, audio: torch.Tensor, visual: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.augment_audio(audio), self.augment_visual(visual)
+        # visual is either raw frames [T,C,H,W] (4D) or precomputed features [T,D] (2D).
+        aug_visual = self.augment_frames(visual) if visual.ndim == 4 else self.augment_visual(visual)
+        return self.augment_audio(audio), aug_visual
