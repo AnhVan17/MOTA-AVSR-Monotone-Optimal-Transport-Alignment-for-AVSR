@@ -66,4 +66,8 @@ TRAINING_STRATEGY.md
 VICOCKTAIL_MODAL_GUIDE.md
 tmp_diag.py
 *.jsonl
-*.pt
+*.pt
+# Local data-verification artifacts (downloaded shards + montage images), keep dir structure
+verification/**/*.tar
+verification/**/*.png
+verification/**/*_meta.json
