@@ -430,14 +430,18 @@ class BasePreprocessor(ABC):
         """Should return list of dict: {'full_path', 'rel_path', 'text'}"""
         pass
 
-    def run(self, output_manifest="manifest.jsonl", output_dir=None, extract_features=True):
+    def run(self, output_manifest="manifest.jsonl", output_dir=None, extract_features=True,
+            shard_pattern=None, shard_maxcount=2000):
         """
         Run preprocessing pipeline.
-        
+
         Args:
-            output_manifest: Path to save the manifest file
+            output_manifest: Path to save the manifest file (loose-.pt mode only)
             output_dir: Directory to save .pt feature files. If None, saves next to input videos.
             extract_features: Whether to extract and save features
+            shard_pattern: if set (e.g. '.../vicocktail-train-%06d.tar'), write WebDataset
+                .tar shards instead of loose .pt + manifest (solves Volume inode limit).
+            shard_maxcount: samples per shard before rotating.
         """
         logger.info("Collecting metadata...")
         metadata = self.collect_metadata()
@@ -450,6 +454,16 @@ class BasePreprocessor(ABC):
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
             logger.info(f"   Output directory: {output_dir}")
+
+        # WebDataset sharded output (optional). Packs samples into .tar shards.
+        shard_sink, n_sharded = None, 0
+        if shard_pattern:
+            import webdataset as wds
+            shard_dir = os.path.dirname(shard_pattern)
+            if shard_dir:
+                os.makedirs(shard_dir, exist_ok=True)
+            shard_sink = wds.ShardWriter(shard_pattern, maxcount=shard_maxcount)
+            logger.info(f"   WebDataset shards: {shard_pattern} (maxcount={shard_maxcount})")
 
         # Optimization: Create a map for O(1) access
         metadata_map = {m['full_path']: m for m in metadata}
@@ -514,24 +528,44 @@ class BasePreprocessor(ABC):
                             'path': video_path # Original path
                         }
                         
-                        # Determine save path
-                        if self.output_dir:
-                            # Use output_dir, preserve relative structure
-                            rel_path = item.get('rel_path', os.path.basename(video_path))
-                            pt_filename = os.path.splitext(rel_path)[0] + ".pt"
-                            save_path = os.path.join(self.output_dir, pt_filename)
-                            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                        if shard_sink is not None:
+                            # WebDataset shard: one .tar sample (key + .pth/.txt fields)
+                            key = str(item_id).replace(".", "_").replace("/", "_")
+                            shard_sink.write({
+                                "__key__": key,
+                                "audio.pth": audio_feats.cpu(),
+                                "visual.pth": visual_feats.cpu(),
+                                "txt": text,
+                            })
+                            n_sharded += 1
                         else:
-                            # Save next to original video
-                            save_path = video_path.replace(".mpg", ".pt").replace(".mp4", ".pt").replace(".webm", ".pt")
-                        
-                        torch.save(save_dict, save_path)
+                            # Legacy loose .pt output
+                            if self.output_dir:
+                                rel_path = item.get('rel_path', os.path.basename(video_path))
+                                pt_filename = os.path.splitext(rel_path)[0] + ".pt"
+                                save_path = os.path.join(self.output_dir, pt_filename)
+                                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                            else:
+                                save_path = video_path.replace(".mpg", ".pt").replace(".mp4", ".pt").replace(".webm", ".pt")
+                            torch.save(save_dict, save_path)
                         count += 1
                         
                     except Exception as e:
                         logger.error(f"FAILED {video_path}: {e}")
 
-        # 2. Save Manifest
+        # 2a. WebDataset mode: close shards + write _meta.json (no jsonl manifest).
+        if shard_sink is not None:
+            shard_sink.close()
+            from src.data.shards import _pattern_to_glob, _meta_path
+            import glob as _glob
+            num_shards = len(_glob.glob(_pattern_to_glob(shard_pattern)))
+            with open(_meta_path(shard_pattern), 'w', encoding='utf-8') as f:
+                json.dump({"num_samples": n_sharded, "num_shards": num_shards}, f)
+            logger.info(f"Wrote {n_sharded} samples → {num_shards} shards; meta={_meta_path(shard_pattern)}")
+            logger.info("Done!")
+            return
+
+        # 2b. Save Manifest (loose-.pt mode)
         logger.info(f"Saving manifest to {output_manifest}...")
         with open(output_manifest, 'w', encoding='utf-8') as f:
             for item in metadata:
