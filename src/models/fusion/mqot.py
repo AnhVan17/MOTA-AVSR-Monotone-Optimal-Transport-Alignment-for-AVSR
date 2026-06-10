@@ -118,7 +118,6 @@ class MQOTLayer(nn.Module):
           v_t+1 = logsumexp(K^T + u_t) / ε * (1/(1+α))  +  v_t * (α/(1+α))
         """
         B, H = cost.shape[0], cost.shape[1]
-        eps = F.softplus(self.log_epsilon).clamp(min=0.005)
         alpha = self.kl_penalty
         denom = 1.0 + alpha
 

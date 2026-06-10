@@ -61,12 +61,12 @@ python scripts/local/data/verify_vocab_vi.py
 Modal `image` + `volume` definitions are centralized so a dependency bump happens in ONE place.
 Each modal script imports the flavor it needs instead of redefining a pip block:
 
-| Image                | Used by                            |
-| -------------------- | ---------------------------------- |
-| `ML_TRAIN_IMAGE`     | train_phase1/2, inference_phase1   |
-| `PREPROC_IMAGE`      | prep_features_gpu, prep_vicocktail |
-| `CPU_FACEMESH_IMAGE` | prep_facemesh_cpu                  |
-| `BARE_IMAGE`         | volume-management / debug utils    |
+| Image             | Used by                            |
+| ----------------- | ---------------------------------- |
+| `ML_TRAIN_IMAGE`  | train_phase1/2, inference_phase1   |
+| `PREPROC_IMAGE`   | prep_features_gpu, prep_vicocktail |
+| `FACE_CROP_IMAGE` | prep_face_crop                     |
+| `BARE_IMAGE`      | volume-management / debug utils    |
 
 ```python
 from src.infra.modal_image import ML_TRAIN_IMAGE, get_volume

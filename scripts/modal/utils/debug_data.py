@@ -25,7 +25,7 @@ def check_data():
         
     if not txt_files:
         print("❌ NO .txt or .json files found in /mnt/vicocktail_cropped")
-        print("   -> Conclusion: prep_facemesh_cpu.py needs to be re-run.")
+        print("   -> Conclusion: prep_face_crop.py needs to be re-run.")
     else:
         print(f"✅ Found label files (Sample): {txt_files}")
         

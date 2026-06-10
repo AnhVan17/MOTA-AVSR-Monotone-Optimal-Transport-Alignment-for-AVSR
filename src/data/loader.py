@@ -52,7 +52,7 @@ def build_dataloader(
 
     logger.info(f"Building DataLoader [{mode}]")
     logger.debug(f"  Manifest: {manifest_path}")
-    logger.debug(f"  Input: pre-computed .pt features only")
+    logger.debug("  Input: pre-computed .pt features only")
 
     # --- Auto-detect dataset type ---
     dataset_type = _detect_dataset_type(manifest_path)

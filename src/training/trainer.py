@@ -16,7 +16,6 @@ from src.utils.device import get_device, supports_amp, make_grad_scaler
 from src.utils.common import (
     AverageMeter,
     save_checkpoint,
-    load_checkpoint,
     get_lr,
     EarlyStopping
 )

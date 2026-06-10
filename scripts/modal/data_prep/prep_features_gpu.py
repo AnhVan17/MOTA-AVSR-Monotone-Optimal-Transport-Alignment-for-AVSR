@@ -2,7 +2,6 @@ import modal
 import os
 import glob
 import sys
-import shutil
 from pathlib import Path
 
 # --- Config ---
@@ -38,7 +37,6 @@ def extract_features_shard(subset_path):
     """
     from src.data.preprocessors.base import BasePreprocessor
     from src.utils.logging_utils import setup_logger
-    import torch
     
     logger = setup_logger("FeatureExtractor")
     
@@ -99,7 +97,7 @@ def extract_features_shard(subset_path):
             return meta
 
     # Run Extraction
-    # use_precropped=True is CRITICAL to skip FaceMesh and just resize
+    # use_precropped=True is CRITICAL to skip mouth-crop and just resize
     processor = FileSystemPreprocessor(data_root=subset_path, use_precropped=True)
     
     output_dir = os.path.join(OUTPUT_ROOT, subset_name)
@@ -126,7 +124,7 @@ def extract_features_shard(subset_path):
             
             if empty_count > 0:
                 logger.error(f"❌ CRITICAL: Found {empty_count}/{len(lines)} samples with EMPTY LABELS in {subset_name}!")
-                logger.error("   -> Check if prep_facemesh_cpu.py successfully copied .txt files.")
+                logger.error("   -> Check if prep_face_crop.py successfully copied .txt files.")
             else:
                 logger.info(f"✅ Verified: All {len(lines)} samples have valid text labels.")
     except Exception as e:

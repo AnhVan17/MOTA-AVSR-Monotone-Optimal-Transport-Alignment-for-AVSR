@@ -5,7 +5,6 @@ from pathlib import Path
 
 # Face detection via face-alignment (GPU-native, no EGL issues)
 
-from modal import App, Image, Volume
 
 # --- Config ---
 APP_NAME = "avsr-prep-vicocktail"
@@ -49,7 +48,7 @@ def download_shard_subset(subset):
     image=image,
     volumes={"/mnt": volume},
     timeout=7200, # 2 hours processing time
-    gpu="T4" # GPU needed for FaceMesh + Whisper
+    gpu="T4" # GPU needed for face-alignment + Whisper
 )
 def process_data(subset_name, limit_ratio: float = 1.0):
     sys.path.append("/root")
@@ -206,9 +205,9 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
         
     elif action == "process":
         # Note: 'process' in this context now means GPU Feature Extraction
-        # The CPU FaceMesh step is handled by 'prep_facemesh_cpu.py' (kept separate for env isolation)
-        print(f"Starting GPU Processing (FaceMesh + Audio) for {subset} (Ratio: {limit_ratio})...")
-        # Reuse process_data for the GPU-heavy part (FaceMesh + Extraction)
+        # The CPU mouth-crop step is handled by 'prep_face_crop.py' (kept separate for env isolation)
+        print(f"Starting GPU Processing (face-alignment + Audio) for {subset} (Ratio: {limit_ratio})...")
+        # Reuse process_data for the GPU-heavy part (face-alignment + Extraction)
         # Note: Previous 'process_data' in this file was CPU-based or assumed raw tars.
         # Wait, lines 64-98 define process_data with GPU=T4.
         # It calls ViCocktailPreprocessor.

@@ -40,7 +40,7 @@ AVSR đã đạt hiệu suất cao trên các benchmark sạch như LRS3 (tiến
 
 ### 2.3. Mức System / Pipeline
 
-**Preprocessing là bottleneck hiệu năng.** MediaPipe FaceMesh chạy CPU-only để tránh EGL conflict với PyTorch CUDA, tốc độ chậm (~30 phút cho 1 giờ video). Face detection thất bại với pose lệch (>30° yaw) — không tạo ra quality signal cho downstream fusion, trong khi lệch pha tự nhiên và video compression delay tạo asynchrony không cố định, không xử lý được bằng static preprocessing.
+**Preprocessing là bottleneck hiệu năng.** Cách tiếp cận phổ biến dùng MediaPipe FaceMesh phải chạy CPU-only để tránh EGL conflict với PyTorch CUDA, dẫn đến chậm (~30 phút cho 1 giờ video) và dễ thất bại với pose lệch (>30° yaw). MOTA-v2 thay khâu này bằng face-alignment (SFD + FAN, GPU-native) để loại bỏ xung đột EGL và tăng tốc; tuy nhiên bản thân face detection vẫn không tạo ra quality signal cho downstream fusion, trong khi lệch pha tự nhiên và video compression delay tạo asynchrony không cố định, không xử lý được bằng static preprocessing.
 
 ---
 

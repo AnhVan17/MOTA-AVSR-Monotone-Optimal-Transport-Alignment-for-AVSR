@@ -10,7 +10,7 @@ which the images add via ``add_local_dir``.
 Three image flavors (matching the original per-script definitions exactly):
   - ML_TRAIN_IMAGE     : training + inference (torch + HF + eval/io deps), ships configs + src
   - PREPROC_IMAGE      : data preprocessing (heavier: timm/webdataset/face-alignment/...), ships src
-  - CPU_FACEMESH_IMAGE : CPU-only face/mouth crop
+  - FACE_CROP_IMAGE    : CPU-only mouth-ROI crop (face-alignment SFD+FAN)
   - BARE_IMAGE         : plain image for volume-management / debug utilities
 """
 import modal
@@ -79,8 +79,8 @@ PREPROC_IMAGE = (
     .add_local_dir("src", remote_path="/root/src")
 )
 
-# CPU-only face/mouth crop (torch pulled transitively by face-alignment, CPU build).
-CPU_FACEMESH_IMAGE = (
+# CPU-only mouth-ROI crop (torch pulled transitively by face-alignment, CPU build).
+FACE_CROP_IMAGE = (
     _base()
     .apt_install("ffmpeg", "libgl1-mesa-glx")
     .pip_install("face-alignment>=1.4.0", "opencv-python-headless", "numpy<2", "tqdm", "pyyaml")

@@ -23,9 +23,7 @@ def audit_volume():
         
     # 2. Detailed Structure Analysis
     print("\n[2] Detailed Content Analysis:")
-    
-    important_dirs = ["/mnt/data", "/mnt/manifests", "/mnt/vicocktail_raw", "/mnt/vicocktail_cropped", "/mnt/vicocktail_features", "/mnt/checkpoints", "/mnt/logs"]
-    
+
     # Walk top level only
     try:
         root_items = os.listdir("/mnt")

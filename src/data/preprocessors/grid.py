@@ -41,7 +41,7 @@ class GridPreprocessor(BasePreprocessor):
             }
 
         # Run with ThreadPool
-        logger.info(f"[Grid] Metadata check running with multiple threads...")
+        logger.info("[Grid] Metadata check running with multiple threads...")
         results = []
         with ThreadPoolExecutor(max_workers=16) as executor:
             # Use list() to trigger execution and tqdm to show progress

@@ -2,7 +2,7 @@
 GRID Dataset for AVSR Training
 ================================
 Loads pre-computed .pt features from preprocessing pipeline.
-Raw video loading (MediaPipe, face detection) is owned by the preprocessing team.
+Raw video loading (face-alignment mouth crop) is owned by the preprocessing team.
 """
 
 from .base import FeatureDataset
