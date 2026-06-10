@@ -12,7 +12,7 @@ from src.training.losses import create_loss
 from src.evaluation.metrics import MetricCalculator
 from src.evaluation.decoding import CTCDecoder
 from src.utils.logging_utils import setup_logger
-from src.utils.device import get_device, supports_amp
+from src.utils.device import get_device, supports_amp, make_grad_scaler
 from src.utils.common import (
     AverageMeter,
     save_checkpoint,
@@ -121,7 +121,7 @@ class Trainer:
         self.use_amp = config['training'].get('use_amp', False) and supports_amp(self.device)
         if config['training'].get('use_amp', False) and not self.use_amp:
             logger.warning(f"AMP requested nhưng device {self.device.type} không hỗ trợ → tắt AMP.")
-        self.scaler = torch.amp.GradScaler('cuda', enabled=self.use_amp)
+        self.scaler = make_grad_scaler(self.device, enabled=self.use_amp)
 
         # Training State
         self.start_epoch = 0

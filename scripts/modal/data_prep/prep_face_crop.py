@@ -11,8 +11,12 @@ VOLUME_NAME = "avsr-volume"
 DATA_ROOT = "/mnt/vicocktail_raw"
 OUTPUT_ROOT = "/mnt/vicocktail_cropped"
 
-# Repo root on path so we can import shared Modal image definitions locally (at app-build time).
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+# Make `src` importable. Locally: add repo root (for app-build). In Modal containers the
+# script is flattened to /root and src lives at /root/src, so parents[N] would be out of range.
+if modal.is_local():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+else:
+    sys.path.insert(0, "/root")
 from src.infra.modal_image import FACE_CROP_IMAGE, get_volume
 
 image = FACE_CROP_IMAGE
