@@ -1,5 +1,5 @@
 import torch
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 from tqdm import tqdm
 
 from .decoding import CTCDecoder

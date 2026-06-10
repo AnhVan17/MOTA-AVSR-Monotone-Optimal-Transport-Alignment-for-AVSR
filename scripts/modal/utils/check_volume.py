@@ -46,7 +46,7 @@ def inspect_volume(
     logger = setup_logger("Inspector")
     
     logger.info("=" * 60)
-    logger.info(f"MODAL VOLUME INSPECTOR")
+    logger.info("MODAL VOLUME INSPECTOR")
     logger.info(f"   Volume: {VOLUME_NAME}")
     logger.info(f"   Path: {path}")
     logger.info("=" * 60)

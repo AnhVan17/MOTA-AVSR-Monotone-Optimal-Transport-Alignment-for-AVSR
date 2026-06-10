@@ -9,24 +9,14 @@ import io
 import soundfile as sf
 import warnings
 warnings.filterwarnings("ignore", message="No faces were detected.")
-import random
 from tqdm import tqdm
 from abc import ABC, abstractmethod
-from torch.utils.data import DataLoader, Dataset
 from torch.utils.data import DataLoader, Dataset
 from transformers import WhisperModel, WhisperFeatureExtractor
 from src.utils.logging_utils import setup_logger
 
 logger = setup_logger(__name__)
 
-try:
-    from src.utils.text_cleaning import normalize_text
-except ImportError:
-    # Fallback if running outside package context
-    import sys
-    sys.path.append(os.getcwd())
-    from src.utils.text_cleaning import normalize_text
-        
 
 class PreprocessConfig:
     # Visual Params (SOTA: 88x88)
@@ -265,7 +255,7 @@ class AudioFeatureExtractor:
             waveform, _ = sf.read(io.BytesIO(audio_data), dtype='float32')
             return self._normalize_pad(torch.from_numpy(waveform).unsqueeze(0))
             
-        except Exception as e:
+        except Exception:
             # logger.error(f"Audio extract failed for {video_path}: {e}")
             return None
 
@@ -411,120 +401,6 @@ class RawVideoDataset(Dataset):
 
 def collate_video_wrapper(batch):
     return [item[0] for item in batch], [item[1] for item in batch]
-
-
-# --- 5. KEY FRAME EXTRACTOR (Shared - Dataset Agnostic) ---
-
-class KeyFrameExtractor:
-    """
-    Extract key frames from cropped video.
-    Removes redundant similar frames to reduce data size and speed up training.
-    Works with ANY dataset - only needs a cropped video as input.
-    """
-    
-    def __init__(self, threshold: float = 30.0, max_frames: int = 75, min_frames: int = 10):
-        """
-        Args:
-            threshold: Minimum pixel difference to consider a frame as "key" (0-255 scale)
-            max_frames: Maximum number of frames to keep
-            min_frames: Minimum frames to ensure (even if similar)
-        """
-        self.threshold = threshold
-        self.max_frames = max_frames
-        self.min_frames = min_frames
-    
-    def extract_from_video(self, video_path: str) -> np.ndarray:
-        """
-        Extract key frames from video file.
-        
-        Returns:
-            np.ndarray: Shape (N, H, W, C) where N is number of key frames
-        """
-        cap = cv2.VideoCapture(video_path)
-        frames = []
-        
-        try:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                frames.append(frame)
-        finally:
-            cap.release()
-        
-        if not frames:
-            return np.array([])
-        
-        return self._select_key_frames(frames)
-    
-    def _select_key_frames(self, frames: list) -> np.ndarray:
-        """Select key frames based on frame difference."""
-        if len(frames) <= self.min_frames:
-            return np.array(frames)
-        
-        key_indices = [0]  # Always keep first frame
-        prev_frame = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY).astype(np.float32)
-        
-        for i in range(1, len(frames)):
-            curr_frame = cv2.cvtColor(frames[i], cv2.COLOR_BGR2GRAY).astype(np.float32)
-            diff = np.mean(np.abs(curr_frame - prev_frame))
-            
-            if diff > self.threshold:
-                key_indices.append(i)
-                prev_frame = curr_frame
-        
-        # Always include last frame
-        if key_indices[-1] != len(frames) - 1:
-            key_indices.append(len(frames) - 1)
-        
-        # Ensure minimum frames by sampling
-        if len(key_indices) < self.min_frames:
-            step = len(frames) // self.min_frames
-            key_indices = list(range(0, len(frames), max(1, step)))[:self.min_frames]
-        
-        # Limit to max frames
-        if len(key_indices) > self.max_frames:
-            step = len(key_indices) // self.max_frames
-            key_indices = key_indices[::max(1, step)][:self.max_frames]
-        
-        return np.array([frames[i] for i in sorted(set(key_indices))])
-    
-    def save_as_tensor(self, frames: np.ndarray, output_path: str):
-        """
-        Save key frames as a PyTorch tensor file (.pt).
-        
-        Args:
-            frames: Shape (N, H, W, C) - BGR format from OpenCV
-            output_path: Path to save .pt file
-        """
-        if len(frames) == 0:
-            torch.save(torch.zeros((1, 3, PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE)), output_path)
-            return
-        
-        # Resize and convert: (N, H, W, C) BGR -> (N, C, H, W) RGB normalized
-        processed = []
-        for frame in frames:
-            resized = cv2.resize(frame, (PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE))
-            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            processed.append(rgb)
-        
-        tensor = torch.tensor(np.array(processed), dtype=torch.float32).permute(0, 3, 1, 2) / 255.0
-        torch.save(tensor, output_path)
-    
-    def save_as_images(self, frames: np.ndarray, output_dir: str):
-        """
-        Save key frames as individual JPEG images.
-        
-        Args:
-            frames: Shape (N, H, W, C)
-            output_dir: Directory to save images
-        """
-        os.makedirs(output_dir, exist_ok=True)
-        
-        for i, frame in enumerate(frames):
-            resized = cv2.resize(frame, (PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE))
-            output_path = os.path.join(output_dir, f"frame_{i:04d}.jpg")
-            cv2.imwrite(output_path, resized)
 
 
 # --- 6. BASE PREPROCESSOR ---

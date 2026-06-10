@@ -24,15 +24,15 @@ def setup_logger(name):
 
 logger = setup_logger(__name__)
 
-class FaceMeshConfig:
+class CropConfig:
     IMAGE_SIZE = 88
     FRAME_RATE = 25
     # Standardize output format
-    OUTPUT_EXT = ".mp4" 
+    OUTPUT_EXT = ".mp4"
 
-class FaceMeshPreprocessor:
+class MouthCropper:
     """
-    Dedicated Face Landmark Processor using face-alignment (GPU-native).
+    Mouth ROI cropper backed by face-alignment (SFD detector + FAN 68-pt landmarks, GPU-native).
     Designed to be run as a Singleton or with minimal re-initialization.
     """
     _instance = None
@@ -40,12 +40,12 @@ class FaceMeshPreprocessor:
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(FaceMeshPreprocessor, cls).__new__(cls)
+            cls._instance = super(MouthCropper, cls).__new__(cls)
         return cls._instance
 
     def __init__(self, device=None):
         # Ensure face-alignment is initialized only once
-        if FaceMeshPreprocessor._fa is None:
+        if MouthCropper._fa is None:
             self._init_face_alignment(device)
 
     def _init_face_alignment(self, device=None):
@@ -55,7 +55,7 @@ class FaceMeshPreprocessor:
         device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
         logger.info(f"Initializing face-alignment on {device}...")
         
-        FaceMeshPreprocessor._fa = face_alignment.FaceAlignment(
+        MouthCropper._fa = face_alignment.FaceAlignment(
             face_alignment.LandmarksType.TWO_D,
             device=device,
             flip_input=False,
@@ -73,7 +73,7 @@ class FaceMeshPreprocessor:
             return None
 
         cap = cv2.VideoCapture(video_path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or FaceMeshConfig.FRAME_RATE
+        fps = cap.get(cv2.CAP_PROP_FPS) or CropConfig.FRAME_RATE
         frames = []
         
         while True:
@@ -97,7 +97,7 @@ class FaceMeshPreprocessor:
                 crop, prev_bbox = self._extract_mouth(frame, prev_bbox)
             
             # Resize
-            crop = cv2.resize(crop, (FaceMeshConfig.IMAGE_SIZE, FaceMeshConfig.IMAGE_SIZE))
+            crop = cv2.resize(crop, (CropConfig.IMAGE_SIZE, CropConfig.IMAGE_SIZE))
             cropped_frames.append(crop)
 
         # Convert to numpy array [T, H, W, C]
@@ -122,7 +122,7 @@ class FaceMeshPreprocessor:
         try:
             # face-alignment accepts RGB
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            landmarks = FaceMeshPreprocessor._fa.get_landmarks_from_image(rgb)
+            landmarks = MouthCropper._fa.get_landmarks_from_image(rgb)
             
             if landmarks is not None and len(landmarks) > 0:
                 # 68-point landmarks: mouth = [48:68] (20 points)
@@ -137,7 +137,7 @@ class FaceMeshPreprocessor:
                 radius = max(
                     int((max(xs) - min(xs)) * 1.8) // 2,
                     int((max(ys) - min(ys)) * 1.8) // 2,
-                    FaceMeshConfig.IMAGE_SIZE // 2
+                    CropConfig.IMAGE_SIZE // 2
                 )
                 
                 y1 = max(0, cy - radius)
@@ -151,7 +151,7 @@ class FaceMeshPreprocessor:
             
         # Fallback Center Crop
         cy, cx = h // 2, w // 2
-        r = FaceMeshConfig.IMAGE_SIZE // 2
+        r = CropConfig.IMAGE_SIZE // 2
         return frame[max(0, cy-r):min(h, cy+r), max(0, cx-r):min(w, cx+r)], None
 
     def _save_video(self, frames, path, fps):

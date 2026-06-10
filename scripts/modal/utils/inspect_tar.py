@@ -1,5 +1,4 @@
 import modal
-import os
 import tarfile
 import glob
 

@@ -215,39 +215,6 @@ flowchart TB
 
 ## 6) Luồng xử lý (pipeline / workflow)
 
-## 5) Các module chính
-
-1. **Preprocessing / Feature Preparation**
-   - Tách audio, crop mouth ROI
-   - Trích xuất đặc trưng audio/visual (hoặc load precomputed `.pt`)
-
-2. **Projection Layer**
-   - Audio 768 -> d_model
-   - Visual 512 -> d_model
-
-3. **QualityGate (Coarse Fusion)**
-   - Ước lượng độ tin cậy audio/visual
-   - Trộn hai modality theo trọng số động
-
-4. **MQOT (Fine Alignment/Fusion)**
-   - Dùng ý tưởng Optimal Transport để căn chỉnh audio-visual khi lệch thời gian
-   - Sinh transport map làm tín hiệu hướng dẫn hợp nhất
-
-5. **Conformer Encoder**
-   - Mã hóa ngữ cảnh theo thời gian
-
-6. **Hybrid Decoder (CTC + AR)**
-   - CTC branch cho alignment mạnh
-   - AR branch cho ngôn ngữ/chuỗi token mượt hơn
-
-7. **Training/Evaluation Engine**
-   - Hybrid loss
-   - Decoding + WER/CER
-
----
-
-## 6) Luồng xử lý (pipeline / workflow)
-
 ## 6.1 Workflow tổng quát
 
 1. Nhận input audio + video

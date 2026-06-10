@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install minimal CPU deps (unit tests are GPU/network-free)
+        run: |
+          python -m pip install --upgrade pip
+          # torch CPU wheel keeps the job light (no CUDA download)
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "numpy<2" pyyaml pytest ruff
+
+      - name: Ruff (syntax errors + pyflakes)
+        run: ruff check src tests scripts
+
+      - name: Pytest (unit)
+        run: pytest tests/ -q

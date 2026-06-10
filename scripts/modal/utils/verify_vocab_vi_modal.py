@@ -1,5 +1,4 @@
 import modal
-import os
 
 # Define the image with necessary dependencies
 # Minimal image for transformers
@@ -22,7 +21,7 @@ def verify_remote():
     # 2. Initialize Vietnamese
     tok_vi = WhisperTokenizer.from_pretrained("openai/whisper-small", language="vi", task="transcribe")
     
-    print(f"\n[1] Vocab Size Comparison:")
+    print("\n[1] Vocab Size Comparison:")
     print(f"    EN: {tok_en.vocab_size}")
     print(f"    VI: {tok_vi.vocab_size}")
     
@@ -31,7 +30,7 @@ def verify_remote():
     else:
         print("✅ Vocab Size is STABLE (51865).")
         
-    print(f"\n[2] Special Tokens (VI):")
+    print("\n[2] Special Tokens (VI):")
     print(f"    EOT (End of Transcript): {tok_vi.eos_token_id}")
     print(f"    SOT (Start of Transcript): {tok_vi.convert_tokens_to_ids('<|startoftranscript|>')}")
     
