@@ -11,6 +11,24 @@ from src.utils.logging_utils import setup_logger
 
 logger = setup_logger(__name__)
 
+_VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".avi", ".mov")
+
+
+def _count_video_members(tar_path: str):
+    """Count video clips (one per sample) in a raw .tar — gives the progress-bar a total.
+
+    Header-only scan (seeks past data), so it's cheap (~seconds) vs ~40min processing.
+    Returns None on failure → the bar degrades to a plain counter (no %/ETA).
+    """
+    import tarfile
+    try:
+        with tarfile.open(tar_path) as t:
+            return sum(1 for m in t.getmembers() if m.name.lower().endswith(_VIDEO_EXTS))
+    except Exception as e:
+        logger.warning(f"Could not count clips in {os.path.basename(tar_path)} ({e}); progress bar will show count only.")
+        return None
+
+
 class ViCocktailPreprocessor(BasePreprocessor):
     """
     Preprocessor for ViCocktail Dataset (WebDataset format).
@@ -95,7 +113,7 @@ class ViCocktailPreprocessor(BasePreprocessor):
         import time
         t_crop = t_visual = t_audio = 0.0  # PROFILE: stage timing accumulators (seconds)
         
-        for shard_item in tqdm(metadata, desc="Processing Shards"):
+        for s_idx, shard_item in enumerate(metadata):
             tar_path = shard_item['full_path']
             shard_name = os.path.basename(tar_path).replace(".tar", "")
 
@@ -103,12 +121,21 @@ class ViCocktailPreprocessor(BasePreprocessor):
             if max_samples is not None and (len(manifest_entries) + n_sharded) >= max_samples:
                 break
 
+            # Count clips up-front so the progress bar has a real total (%, ETA).
+            n_in_shard = _count_video_members(tar_path)
+            logger.info(f"[{s_idx + 1}/{len(metadata)}] Shard {shard_name} — {n_in_shard if n_in_shard is not None else '?'} clips")
+
+            pbar = None
             try:
                 # Use WebDataset to iterate
                 # ViCocktail structure: key.mp4, key.wav, key.txt
                 dataset = wds.WebDataset(tar_path).decode()
 
-                for i, sample in enumerate(dataset):
+                # Per-clip bar: a real bar in a TTY; in Modal (non-TTY) tqdm emits one line
+                # every `mininterval`s → traceable progress with %/rate/ETA. Counts each clip
+                # read (incl. skipped), which is what wall-clock tracks.
+                pbar = tqdm(dataset, total=n_in_shard, desc=shard_name, unit="clip", mininterval=10.0)
+                for i, sample in enumerate(pbar):
                     if max_samples is not None and (len(manifest_entries) + n_sharded) >= max_samples:
                         break
                     key = sample.get("__key__")
@@ -206,7 +233,10 @@ class ViCocktailPreprocessor(BasePreprocessor):
                     
             except Exception as e:
                 logger.error(f"Failed to process shard {shard_name}: {e}")
-                
+            finally:
+                if pbar is not None:
+                    pbar.close()
+
         # Close shards + write _meta.json (WebDataset mode), else write jsonl manifest.
         import json
         _n = max(1, n_sharded + len(manifest_entries))
