@@ -61,8 +61,10 @@ def download_one_shard(shard):
 @app.function(
     image=image,
     volumes={"/mnt": volume},
-    timeout=7200, # 2 hours processing time
-    gpu="T4" # GPU needed for face-alignment + Whisper
+    gpu="T4",          # rẻ nhất; bottleneck là face-align per-frame (launch-bound), GPU to KHÔNG giúp (đã đo)
+    cpu=4,             # giải mã video (ffmpeg/opencv)
+    memory=16384,      # 16 GB — headroom cho frame buffer + models
+    timeout=14400,     # 4h — đủ cho MỘT raw shard + biên an toàn
 )
 def process_data(subset_name, limit_ratio: float = 1.0, max_samples: int = 0):
     """Raw .tar shards → feature WebDataset shards (.tar of audio/visual/text).

@@ -85,6 +85,8 @@ class ViCocktailPreprocessor(BasePreprocessor):
             logger.info(f"   WebDataset shards: {shard_pattern} (maxcount={shard_maxcount})")
 
         manifest_entries = []
+        import time
+        t_crop = t_visual = t_audio = 0.0  # PROFILE: stage timing accumulators (seconds)
         
         for shard_item in tqdm(metadata, desc="Processing Shards"):
             tar_path = shard_item['full_path']
@@ -135,16 +137,17 @@ class ViCocktailPreprocessor(BasePreprocessor):
                     with open(temp_vid_path, "wb") as f:
                         f.write(sample[video_key])
                         
-                    # 3. Process Visual — reuse the hoisted `vp` (face-alignment init once, not per sample)
+                    # 3. Process Visual — reuse hoisted `vp` (PROFILE: t_crop = decode + face-align crop)
+                    _t0 = time.perf_counter()
                     video_tensor = vp.process(temp_vid_path)  # [T, C, H, W]
-                    
+                    t_crop += time.perf_counter() - _t0
+
                     if video_tensor is None:
                         os.remove(temp_vid_path)
                         continue
-                        
-                    # Extract Features (Visual)
-                    # VideoTensor [T, C, H, W] 
-                    # We need to batch it for ResNet
+
+                    # Extract Visual features (PROFILE: t_visual = ResNet)
+                    _t0 = time.perf_counter()
                     video_tensor = video_tensor.to(PreprocessConfig.DEVICE)
                     visual_feats_list = []
                     with torch.no_grad():
@@ -152,12 +155,12 @@ class ViCocktailPreprocessor(BasePreprocessor):
                             batch = video_tensor[j : j + PreprocessConfig.BATCH_SIZE]
                             visual_feats_list.append(self.visual_extractor(batch).cpu())
                     visual_feats = torch.cat(visual_feats_list, dim=0)
-                    
-                    # 4. Process Audio
-                    # Extract from temp video file (since we have it)
-                    # Or use sample['wav'] if available? ViCocktail usually has mp4 only or both.
-                    # safest is use process_file on the mp4
+                    t_visual += time.perf_counter() - _t0
+
+                    # 4. Process Audio (PROFILE: t_audio = decode audio + Whisper)
+                    _t0 = time.perf_counter()
                     audio_feats = self.audio_extractor.process_file(temp_vid_path)
+                    t_audio += time.perf_counter() - _t0
                     
                     # Cleanup
                     os.remove(temp_vid_path)
@@ -199,6 +202,24 @@ class ViCocktailPreprocessor(BasePreprocessor):
                 
         # Close shards + write _meta.json (WebDataset mode), else write jsonl manifest.
         import json
+        _n = max(1, n_sharded + len(manifest_entries))
+        logger.info(
+            f"PROFILE ({_n} samples): "
+            f"crop(decode+face-align)={t_crop:.1f}s ({t_crop/_n:.2f}/sample) | "
+            f"visual(ResNet)={t_visual:.1f}s ({t_visual/_n:.2f}/sample) | "
+            f"audio(Whisper)={t_audio:.1f}s ({t_audio/_n:.2f}/sample)"
+        )
+        logger.info(
+            f"PROFILE crop-split: decode(cv2)={getattr(vp, '_prof_decode', 0.0):.1f}s "
+            f"({getattr(vp, '_prof_decode', 0.0)/_n:.2f}/sample) | "
+            f"detect+crop(face-align)={getattr(vp, '_prof_detect', 0.0):.1f}s "
+            f"({getattr(vp, '_prof_detect', 0.0)/_n:.2f}/sample)"
+        )
+        _fa = getattr(vp, '_prof_fa', 0.0)
+        logger.info(
+            f"PROFILE detail: n_frames={getattr(vp, '_n_frames', 0)} | "
+            f"n_detections={getattr(vp, '_n_det', 0)} | face-align-calls={_fa:.1f}s"
+        )
         if shard_sink is not None:
             shard_sink.close()
             from src.data.shards import _pattern_to_glob, _meta_path

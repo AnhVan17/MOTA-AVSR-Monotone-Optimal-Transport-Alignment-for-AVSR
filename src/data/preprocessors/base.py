@@ -9,6 +9,10 @@ import io
 import soundfile as sf
 import warnings
 warnings.filterwarnings("ignore", message="No faces were detected.")
+# Silence harmless upstream deprecation/info warnings (HF resume_download, torch TypedStorage/cuDNN).
+warnings.filterwarnings("ignore", message=".*resume_download.*")
+warnings.filterwarnings("ignore", message=".*TypedStorage is deprecated.*")
+warnings.filterwarnings("ignore", message=".*Applied workaround for CuDNN.*")
 from tqdm import tqdm
 from abc import ABC, abstractmethod
 from torch.utils.data import DataLoader, Dataset
@@ -31,6 +35,8 @@ class PreprocessConfig:
     # Video Params
     FPS = 25
     VIDEO_FRAMES = 375 # 15s * 25fps
+    DETECT_EVERY = 15  # face-alignment detect mỗi N frame; frame giữa tái dùng bbox (perf; môi ổn định ~0.6s)
+    FACE_DETECTOR = 'sfd'  # 'sfd' (chính xác); 'blazeface' miss ~50% trên ViCocktail → đừng dùng
     
     # System Params
     BATCH_SIZE = 4096      # Aggressively increased for A100
@@ -54,11 +60,13 @@ class VideoProcessor:
                 face_alignment.LandmarksType.TWO_D,
                 device=self.device,
                 flip_input=False,
-                face_detector='sfd'
+                face_detector=PreprocessConfig.FACE_DETECTOR
             )
             logger.info("face-alignment initialized successfully.")
 
     def process(self, video_path):
+        import time
+        _t = time.perf_counter()
         cap = cv2.VideoCapture(video_path)
         frames = []
         try:
@@ -68,33 +76,36 @@ class VideoProcessor:
                 frames.append(frame)
         finally:
             cap.release()
-            
+        self._prof_decode = getattr(self, "_prof_decode", 0.0) + (time.perf_counter() - _t)
+        self._n_frames = getattr(self, "_n_frames", 0) + len(frames)
+
         if not frames: return None
 
+        _t = time.perf_counter()
         processed_frames = []
         prev_bbox = None
-        
+
         for i, frame in enumerate(frames):
-            
             if self.use_precropped:
                 # If pre-cropped, the whole frame is the mouth.
                 crop = frame
             else:
-                # Optimization: Detect every 5 frames
-                if i % 5 == 0 or prev_bbox is None:
+                # Detect every DETECT_EVERY frames, propagate bbox in between (môi ổn định ~0.6s)
+                if i % PreprocessConfig.DETECT_EVERY == 0 or prev_bbox is None:
                     crop, prev_bbox = self.extract_mouth(frame, None)
                 else:
                     crop, prev_bbox = self.extract_mouth(frame, prev_bbox)
-            
+
             # Resize to 88x88 (SOTA standard)
-            crop = cv2.resize(crop, (PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE)) 
-            
+            crop = cv2.resize(crop, (PreprocessConfig.RESNET_INPUT_SIZE, PreprocessConfig.RESNET_INPUT_SIZE))
+
             # Convert to grayscale (SOTA: grayscale for lip reading)
             if PreprocessConfig.USE_GRAYSCALE:
                 crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
             else:
                 crop = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
             processed_frames.append(crop)
+        self._prof_detect = getattr(self, "_prof_detect", 0.0) + (time.perf_counter() - _t)
 
         # Convert to tensor
         frames_np = np.array(processed_frames)
@@ -159,9 +170,13 @@ class VideoProcessor:
 
         # Detect face landmarks using face-alignment
         try:
+            import time as _time
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            _t = _time.perf_counter()
             landmarks = self.fa.get_landmarks_from_image(rgb)
-            
+            self._prof_fa = getattr(self, "_prof_fa", 0.0) + (_time.perf_counter() - _t)
+            self._n_det = getattr(self, "_n_det", 0) + 1
+
             if landmarks is not None and len(landmarks) > 0:
                 # 68-point landmarks: mouth = [48:68]
                 mouth_points = landmarks[0][48:68]
