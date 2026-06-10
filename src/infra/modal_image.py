@@ -65,7 +65,7 @@ PREPROC_IMAGE = (
         "timm==0.9.12",
         "webdataset==0.2.79",
         "huggingface_hub",
-        "face-alignment>=1.4.0",
+        "face-alignment==1.5.0",
         "opencv-python-headless",
         "soundfile",
         "librosa",
@@ -83,7 +83,7 @@ PREPROC_IMAGE = (
 FACE_CROP_IMAGE = (
     _base()
     .apt_install("ffmpeg", "libgl1-mesa-glx")
-    .pip_install("face-alignment>=1.4.0", "opencv-python-headless", "numpy<2", "tqdm", "pyyaml")
+    .pip_install("face-alignment==1.5.0", "opencv-python-headless", "numpy<2", "tqdm", "pyyaml")
     .add_local_dir("src", remote_path="/root/src")
 )
 

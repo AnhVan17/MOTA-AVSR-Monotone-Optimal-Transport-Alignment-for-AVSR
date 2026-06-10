@@ -56,11 +56,16 @@ class VideoProcessor:
             # GPU-native face detection using face-alignment (PyTorch-based)
             self.device = PreprocessConfig.DEVICE
             logger.info(f"Initializing face-alignment on {self.device}...")
+            # compile=False: face_alignment 1.5 torch.compiles the FAN net (one-time ~85s/container),
+            # but its compile-cache needs torch≥2.4 (we pin 2.1.2) → cache never persists → recompile
+            # every container for zero cross-run benefit. torch.compile also skips the SFD detector
+            # (our launch-bound bottleneck), so eager mode is numerically identical + faster overall.
             self.fa = face_alignment.FaceAlignment(
                 face_alignment.LandmarksType.TWO_D,
                 device=self.device,
                 flip_input=False,
-                face_detector=PreprocessConfig.FACE_DETECTOR
+                face_detector=PreprocessConfig.FACE_DETECTOR,
+                compile=False,
             )
             logger.info("face-alignment initialized successfully.")
 
