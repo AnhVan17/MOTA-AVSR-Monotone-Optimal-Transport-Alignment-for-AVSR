@@ -21,7 +21,6 @@ import io
 import sys
 from pathlib import Path
 
-import cv2
 import numpy as np
 import torch
 import webdataset as wds
@@ -29,6 +28,18 @@ import webdataset as wds
 # Make `src` importable when run as a standalone script (sys.path[0] is this file's dir).
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from src.data.shards import build_webdataset  # noqa: E402
+
+
+def _write_png(rgb_grid: np.ndarray, path: Path) -> None:
+    """Write an RGB uint8 array to PNG. Uses PIL if available, else matplotlib (no cv2 dep)."""
+    try:
+        from PIL import Image
+        Image.fromarray(rgb_grid).save(str(path))
+    except ImportError:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        plt.imsave(str(path), rgb_grid)
 
 
 def _save_montage(video_uint8: torch.Tensor, path: Path, n_frames: int = 16, cols: int = 8) -> None:
@@ -42,7 +53,7 @@ def _save_montage(video_uint8: torch.Tensor, path: Path, n_frames: int = 16, col
     for k, f in enumerate(frames):
         r, c = divmod(k, cols)
         grid[r * h:(r + 1) * h, c * w:(c + 1) * w] = f
-    cv2.imwrite(str(path), cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))  # frames are RGB → BGR for cv2
+    _write_png(grid, path)  # frames are RGB (stored RGB) → PIL/matplotlib are RGB-native
 
 
 class _FakeTokenizer:
