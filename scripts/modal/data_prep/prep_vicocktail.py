@@ -87,17 +87,17 @@ def list_raw_shards(subset):
     memory=49152,      # 48 GB — mp_workers × frame buffer + models
     timeout=21600,     # 6h
 )
-def process_data(shard_names, mp_workers: int = 4, limit_ratio: float = 1.0, max_samples: int = 0, detect_batch: int = 1):
-    """Process a GROUP of raw shards IN PARALLEL inside one container.
+def process_data(shard_names, mp_workers: int = 1, limit_ratio: float = 1.0, max_samples: int = 0, detect_batch: int = 1):
+    """Process a GROUP of raw shards inside one container, writing one output tag per raw shard.
 
-    mp_workers subprocess (multiprocessing 'spawn') chạy đồng thời, mỗi worker xử lý 1 raw shard
-    với model riêng, CHIA SẺ 1 GPU (face-align CPU-bound → GPU rảnh đủ nuôi nhiều worker → rẻ hơn
-    spawn nhiều GPU container). Mỗi shard ghi output tag riêng (= stem raw shard) + resume-skip riêng.
+    Parallelism across raw shards comes from spawning MULTIPLE CONTAINERS (each its own GPU) —
+    see the entrypoint. In-container multiprocessing (mp_workers>1, sharing one GPU) was measured
+    to give NO speedup: without CUDA MPS, the workers' GPU kernels time-slice serially, so each
+    runs ~N× slower (net ~0). Hence default mp_workers=1 → shards run sequentially in-process
+    (no spawn → no CUDA-multiprocessing fragility). mp_workers>1 kept only for experimentation.
     """
     sys.path.append("/root")
-    import multiprocessing as mp
-
-    from scripts.modal.data_prep.shard_worker import prewarm_model_cache, process_one_shard
+    from scripts.modal.data_prep.shard_worker import process_one_shard
 
     shard_names = list(shard_names or [])
     if not shard_names:
@@ -105,19 +105,23 @@ def process_data(shard_names, mp_workers: int = 4, limit_ratio: float = 1.0, max
     print(f"Container: {len(shard_names)} shards × mp_workers={mp_workers} "
           f"(gpu={PROCESS_GPU}, detect_batch={detect_batch}): {shard_names}")
 
-    # spawn children re-launch python fresh and read sys.path from PYTHONPATH (NOT our runtime
-    # sys.path edits). Export /root so they can import scripts.* and src.* .
-    os.environ["PYTHONPATH"] = "/root" + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
-
-    print("Prewarming model cache (one CPU download → workers don't race it)...")
-    prewarm_model_cache()
-
     tasks = [(DATA_ROOT, OUTPUT_ROOT, s, limit_ratio, max_samples, detect_batch) for s in shard_names]
-    ctx = mp.get_context("spawn")  # CUDA requires 'spawn' (fork corrupts the CUDA context)
-    with ctx.Pool(processes=max(1, min(mp_workers, len(tasks)))) as pool:
-        results = pool.map(process_one_shard, tasks)
 
-    volume.commit()  # workers wrote into the mounted volume; commit once from the parent
+    if mp_workers <= 1:
+        # Sequential in-process: robust (no spawn), GPU fully used by the one worker.
+        results = [process_one_shard(t) for t in tasks]
+    else:
+        # Experimental: share one GPU across processes (measured no gain — see docstring).
+        import multiprocessing as mp
+        from scripts.modal.data_prep.shard_worker import prewarm_model_cache
+        # spawn children read sys.path from PYTHONPATH (not our runtime edits) → export /root.
+        os.environ["PYTHONPATH"] = "/root" + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
+        prewarm_model_cache()  # one CPU download → workers don't race it
+        ctx = mp.get_context("spawn")  # CUDA requires 'spawn'
+        with ctx.Pool(processes=min(mp_workers, len(tasks))) as pool:
+            results = pool.map(process_one_shard, tasks)
+
+    volume.commit()  # workers wrote into the mounted volume; commit once
     for r in results:
         print(f"  {r}")
     n_ok = sum(r.startswith("OK") for r in results)
@@ -236,14 +240,16 @@ def extract_features_shard(subset_name):
 
 @app.local_entrypoint()
 def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0,
-         containers: int = 4, mp_workers: int = 4, detect_batch: int = 1, max_shards: int = 0):
+         containers: int = 4, mp_workers: int = 1, detect_batch: int = 1, max_shards: int = 0):
     """
     Args:
         action: 'download', 'download_one', 'process' (raw→frame shards), 'inspect', 'inspect_output'
         subset: 'train' / 'avvn-test-000000' / 'test_snr_...' / 'all' (filter keyword on raw shards)
         max_samples: >0 limits samples PER shard for a cheap smoke (process action).
-        containers: số container GPU chạy SONG SONG (process). ~3-4 để lịch sự với volume dùng chung.
-        mp_workers: số worker multiprocessing TRONG mỗi container (chia sẻ 1 GPU). Hạ nếu OOM VRAM.
+        containers: số container GPU chạy SONG SONG (process) — ĐÂY là đòn bẩy tốc độ chính (mỗi
+            container 1 GPU riêng). ~4-8; cân nhắc lịch sự với volume/quota dùng chung.
+        mp_workers: worker/container chia sẻ 1 GPU. DEFAULT 1 — đo thực tế mp>1 KHÔNG nhanh hơn
+            (kernel time-slice nối tiếp khi thiếu CUDA MPS). Để >1 chỉ khi thử nghiệm.
         detect_batch: gom frame qua SFD/GPU 1 lần. DEFAULT 1 — đo thực tế batching KHÔNG giúp (CPU-bound).
         max_shards: >0 chỉ xử lý N raw shard đầu (cho smoke test mp trước khi chạy full).
 

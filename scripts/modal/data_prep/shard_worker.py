@@ -36,9 +36,17 @@ def process_one_shard(args) -> str:
     """
     data_root, output_root, shard_name, limit_ratio, max_samples, detect_batch = args
     sys.path.append("/root")
+    # Pin each worker to 1 CPU thread BEFORE importing numpy/torch — else every worker's BLAS/cv2
+    # spawns ~all-cores threads → N workers oversubscribe the cores → each runs ~N× slower (net 0 gain).
+    for _v in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[_v] = "1"
     from src.data.preprocessors.base import PreprocessConfig
     from src.data.preprocessors.vicocktail import ViCocktailPreprocessor
     from src.data.shards import _meta_path
+    import cv2
+    import torch
+    torch.set_num_threads(1)
+    cv2.setNumThreads(0)  # 0 = disable cv2's internal threading (avoid oversubscription)
 
     PreprocessConfig.DETECT_BATCH = detect_batch
     out_tag = shard_name[:-4] if shard_name.endswith(".tar") else shard_name  # e.g. 'avvn-train-000005'
@@ -56,6 +64,9 @@ def process_one_shard(args) -> str:
             limit_ratio=limit_ratio,
             max_samples=(max_samples or None),
         )
-        return f"OK {out_tag}"
+        # Peak VRAM of THIS worker → helps tune how many workers fit one GPU.
+        import torch
+        vram = torch.cuda.max_memory_allocated() / 1e9 if torch.cuda.is_available() else 0.0
+        return f"OK {out_tag} (peak VRAM {vram:.2f} GB)"
     except Exception as e:  # one bad shard shouldn't kill the whole batch
         return f"FAIL {out_tag}: {e}"
