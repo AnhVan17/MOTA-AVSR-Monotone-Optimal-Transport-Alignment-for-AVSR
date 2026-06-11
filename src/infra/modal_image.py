@@ -34,6 +34,26 @@ def get_volume(name: str = VOLUME_NAME) -> "modal.Volume":
     return modal.Volume.from_name(name, create_if_missing=True)
 
 
+HF_CACHE_DIR = "/hf_cache"  # mount point for the shared hf-hub-cache volume (set as HF_HOME)
+
+
+def _bake_preproc_weights() -> None:
+    """Bake face-alignment (SFD+FAN) torch-hub weights into the image at BUILD time.
+
+    These come from adrianbulat.com; without baking, every fanned-out container cold-downloads
+    them at runtime and the concurrent hits get throttled to ~10 kB/s (ETA hours, GPU idling).
+    Baking = one download during build → instant container startup.
+
+    whisper-small is NOT baked here — it loads from the mounted ``hf-hub-cache`` volume via
+    ``HF_HOME`` (populated once by ``populate_hf_cache``), reusing the team's shared HF cache.
+    """
+    import face_alignment
+
+    face_alignment.FaceAlignment(
+        face_alignment.LandmarksType.TWO_D, device="cpu", face_detector="sfd", compile=False,
+    )
+
+
 # Training & inference: torch + HuggingFace + eval/IO deps. Ships configs + src.
 ML_TRAIN_IMAGE = (
     _base()
@@ -76,6 +96,11 @@ PREPROC_IMAGE = (
         index_url=TORCH_INDEX,
         extra_index_url="https://pypi.org/simple",
     )
+    # Bake SFD/FAN weights into the image (one build-time download) so fanned-out containers don't
+    # race the slow adrianbulat.com download at runtime. HF_HOME points at the mounted hf-hub-cache
+    # volume so transformers (whisper) loads from there instead of re-downloading per container.
+    .run_function(_bake_preproc_weights)
+    .env({"HF_HOME": HF_CACHE_DIR})
     .add_local_dir("src", remote_path="/root/src")
 )
 

@@ -25,13 +25,36 @@ if modal.is_local():
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 else:
     sys.path.insert(0, "/root")
-from src.infra.modal_image import PREPROC_IMAGE, get_volume
+from src.infra.modal_image import HF_CACHE_DIR, PREPROC_IMAGE, get_volume
 
 # Shared preprocessing image + this script also ships scripts/ for its helpers.
 image = PREPROC_IMAGE.add_local_dir("scripts", remote_path="/root/scripts")
 
 app = modal.App(APP_NAME)
 volume = get_volume()
+# Team's shared HF cache volume (whisper loads from here via HF_HOME=HF_CACHE_DIR, set on the image).
+hf_cache = modal.Volume.from_name("hf-hub-cache", create_if_missing=True)
+
+
+@app.function(
+    image=image,
+    volumes={HF_CACHE_DIR: hf_cache},
+    timeout=1800,
+    secrets=[modal.Secret.from_name("huggingface-secret")],
+)
+def populate_hf_cache():
+    """Download whisper-small into the shared hf-hub-cache volume ONCE (idempotent).
+
+    Run BEFORE fanning out so the many workers READ whisper from the volume instead of each
+    cold-downloading it concurrently (which races the cache + hits HF rate limits).
+    """
+    sys.path.append("/root")
+    from transformers import WhisperFeatureExtractor, WhisperModel
+
+    WhisperModel.from_pretrained("openai/whisper-small")
+    WhisperFeatureExtractor.from_pretrained("openai/whisper-small")
+    hf_cache.commit()
+    return "hf cache ready (whisper-small)"
 
 @app.function(
     image=image,
@@ -81,7 +104,7 @@ def list_raw_shards(subset):
 
 @app.function(
     image=image,
-    volumes={"/mnt": volume},
+    volumes={"/mnt": volume, HF_CACHE_DIR: hf_cache},  # avsr data + shared HF cache (whisper)
     gpu=PROCESS_GPU,   # default T4 (env PROCESS_GPU=L40S để mạnh hơn)
     cpu=12,            # nhiều core cho multiprocessing (face-align CPU-bound)
     memory=49152,      # 48 GB — mp_workers × frame buffer + models
@@ -273,6 +296,8 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
             return
         if max_shards:
             names = names[:max_shards]
+        # Populate the shared HF cache ONCE (whisper) so fanned-out workers read, not re-download.
+        print(populate_hf_cache.remote())
         # Round-robin split → cân tải giữa các container.
         groups = [g for g in (names[i::containers] for i in range(containers)) if g]
         total_par = len(groups) * mp_workers
