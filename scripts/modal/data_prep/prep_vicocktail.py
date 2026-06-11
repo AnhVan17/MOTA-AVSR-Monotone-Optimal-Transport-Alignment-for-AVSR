@@ -270,7 +270,8 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
          containers: int = 4, mp_workers: int = 1, detect_batch: int = 1, max_shards: int = 0):
     """
     Args:
-        action: 'download', 'download_one', 'process' (raw→frame shards), 'inspect', 'inspect_output'
+        action: 'prepare' (bake image + seed hf-cache), 'download', 'download_one',
+            'process' (raw→frame shards), 'inspect', 'inspect_output'
         subset: 'train' / 'avvn-test-000000' / 'test_snr_...' / 'all' (filter keyword on raw shards)
         max_samples: >0 limits samples PER shard for a cheap smoke (process action).
         containers: số container GPU chạy SONG SONG (process) — ĐÂY là đòn bẩy tốc độ chính (mỗi
@@ -283,7 +284,14 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
     GPU: mặc định T4 (xem PROCESS_GPU ở đầu file); thử L40S bằng `PROCESS_GPU=L40S modal run ...`.
     Tổng song song = containers × mp_workers. Mỗi raw shard → output tag riêng + resume-skip riêng.
     """
-    if action == "download_one":
+    if action == "prepare":
+        # Warm everything ONCE up-front: building `image` bakes SFD/FAN weights into the image
+        # layer (run_function at build), and populate_hf_cache seeds whisper-small into the shared
+        # hf-hub-cache volume. After this, every `process` container starts instantly (no download).
+        print("Preparing: build image (bakes SFD/FAN) + seed whisper into hf-hub-cache volume...")
+        print(populate_hf_cache.remote())
+
+    elif action == "download_one":
         print(f"Smoke test: downloading ONE shard '{subset}'...")
         print(download_one_shard.remote(subset))
 
