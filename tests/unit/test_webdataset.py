@@ -1,8 +1,8 @@
-"""Round-trip tests for WebDataset feature sharding (src/data/shards.py).
+"""Round-trip tests for WebDataset sharding (src/data/shards.py), frame-based schema.
 
-Writes synthetic feature samples to .tar shards, then reads them back through the
-streaming reader and asserts the decoded dict matches what FeatureDataset/Collator expect.
-No network, no heavy deps — synthetic tensors + a fake tokenizer.
+Writes synthetic samples (uint8 mouth-crop frames + fp16 Whisper audio features) to .tar
+shards, then reads them back through the streaming reader and asserts the decoded dict
+matches what the Collator/model expect. No network, no heavy deps — synthetic tensors.
 """
 import torch
 
@@ -20,8 +20,8 @@ def _samples(n):
     for i in range(n):
         yield {
             "id": f"sample{i:04d}",
-            "audio": torch.randn(10 + i, 768),
-            "visual": torch.randn(5 + i, 512),
+            "audio": torch.randn(10 + i, 768),                                # Whisper feats
+            "video": torch.randint(0, 256, (5 + i, 8, 8, 3), dtype=torch.uint8),  # [T,H,W,C]
             "text": f"xin chao {i}",
         }
 
@@ -49,28 +49,44 @@ def test_read_yields_collator_ready_dict(tmp_path):
     s = out[0]
     assert set(s.keys()) >= {"audio", "visual", "target", "text", "rel_path"}
     assert s["audio"].ndim == 2 and s["audio"].shape[1] == 768
-    assert s["visual"].ndim == 2 and s["visual"].shape[1] == 512
+    # visual is now raw frames [T, C, H, W], normalized to [0,1].
+    assert s["visual"].ndim == 4 and s["visual"].shape[1] == 3
+    assert s["visual"].dtype == torch.float32 and 0.0 <= float(s["visual"].max()) <= 1.0
     assert s["target"].dtype == torch.long
     assert isinstance(s["text"], str)
 
 
-def test_roundtrip_is_byte_exact(tmp_path):
-    """The decoded tensors/text must equal what was written (no corruption)."""
+def test_roundtrip_is_exact(tmp_path):
+    """Decoded tensors/text must match what was written (audio within fp16 precision)."""
     pattern = str(tmp_path / "t-%06d.tar")
     audio = torch.arange(30, dtype=torch.float32).reshape(3, 10)
-    visual = torch.ones(4, 512)
+    video = torch.randint(0, 256, (4, 8, 8, 3), dtype=torch.uint8)
 
     def one():
-        yield {"id": "k0", "audio": audio, "visual": visual, "text": "xin chào"}
+        yield {"id": "k0", "audio": audio, "video": video, "text": "xin chào"}
 
     write_feature_shards(one(), pattern, maxcount=10)
     shards = sorted(str(p) for p in tmp_path.glob("t-*.tar"))
     s = next(iter(build_webdataset(shards, _FakeTokenizer(), train=False)))
 
-    assert torch.allclose(s["audio"], audio)
-    assert torch.allclose(s["visual"], visual)
+    # audio stored fp16 → compare against the fp16-rounded reference.
+    assert torch.allclose(s["audio"], audio.half().float())
+    # frames: uint8 [T,H,W,C] → float [T,C,H,W] / 255.
+    assert torch.allclose(s["visual"], video.permute(0, 3, 1, 2).float() / 255.0)
     assert s["text"] == "xin chào"
     assert s["rel_path"] == "k0"
+
+
+def test_train_augment_does_not_crash_on_frames(tmp_path):
+    """Frame augmentation (flip/time-mask) must accept 4D [T,C,H,W] visual."""
+    pattern = str(tmp_path / "a-%06d.tar")
+    write_feature_shards(_samples(4), pattern, maxcount=2)
+    shards = sorted(str(p) for p in tmp_path.glob("a-*.tar"))
+
+    ds = build_webdataset(shards, _FakeTokenizer(), train=True, augment=True,
+                          aug_cfg={"prob": 1.0}, shuffle_buffer=0)
+    s = next(iter(ds))
+    assert s["visual"].ndim == 4 and s["visual"].shape[1] == 3
 
 
 def test_val_order_is_deterministic(tmp_path):

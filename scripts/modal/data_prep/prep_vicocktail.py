@@ -12,6 +12,12 @@ VOLUME_NAME = "avsr-volume"
 DATA_ROOT = "/mnt/vicocktail_raw"
 OUTPUT_ROOT = "/mnt/vicocktail_features"
 
+# Modal pins the GPU on the function decorator at app-build (import) time — it can't be
+# overridden per-call in this client. Default T4: face-align is CPU-bound (SFD postprocess in
+# numpy + per-frame FAN loop), so measured L40S+batching gave ~0% on the 80% bottleneck and
+# only sped up Whisper (~16% overall) for 3.3× cost. Override with: PROCESS_GPU=L40S modal run ...
+PROCESS_GPU = os.environ.get("PROCESS_GPU", "T4")
+
 # --- Image ---
 # Make `src` importable. Locally: add repo root (for app-build). In Modal containers the
 # script is flattened to /root and src lives at /root/src, so parents[N] would be out of range.
@@ -19,13 +25,16 @@ if modal.is_local():
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 else:
     sys.path.insert(0, "/root")
-from src.infra.modal_image import PREPROC_IMAGE, get_volume
+from src.infra.modal_image import HF_CACHE_DIR, PREPROC_IMAGE, get_volume
 
 # Shared preprocessing image + this script also ships scripts/ for its helpers.
 image = PREPROC_IMAGE.add_local_dir("scripts", remote_path="/root/scripts")
 
 app = modal.App(APP_NAME)
 volume = get_volume()
+# Team's shared HF cache volume — whisper loads from here via HF_HOME=HF_CACHE_DIR (set on the
+# image). Seed it ONCE up-front with `modal run scripts/modal/warm_cache.py` (separate concern).
+hf_cache = modal.Volume.from_name("hf-hub-cache", create_if_missing=True)
 
 @app.function(
     image=image,
@@ -61,31 +70,70 @@ def download_one_shard(shard):
 @app.function(
     image=image,
     volumes={"/mnt": volume},
-    gpu="T4",          # rẻ nhất; bottleneck là face-align per-frame (launch-bound), GPU to KHÔNG giúp (đã đo)
-    cpu=4,             # giải mã video (ffmpeg/opencv)
-    memory=16384,      # 16 GB — headroom cho frame buffer + models
-    timeout=14400,     # 4h — đủ cho MỘT raw shard + biên an toàn
 )
-def process_data(subset_name, limit_ratio: float = 1.0, max_samples: int = 0):
-    """Raw .tar shards → feature WebDataset shards (.tar of audio/visual/text).
+def list_raw_shards(subset):
+    """List raw .tar shard basenames matching `subset` (or 'all'), sorted — for batching."""
+    import glob
+    files = glob.glob(f"{DATA_ROOT}/**/*.tar", recursive=True)
+    names = sorted(
+        os.path.basename(f) for f in files
+        if subset == "all" or subset in os.path.basename(f)
+    )
+    return names
 
-    max_samples>0 limits total samples (cheap smoke). Output: OUTPUT_ROOT/vicocktail-{subset}-%06d.tar.
+
+@app.function(
+    image=image,
+    volumes={"/mnt": volume, HF_CACHE_DIR: hf_cache},  # avsr data + shared HF cache (whisper)
+    gpu=PROCESS_GPU,   # default T4 (env PROCESS_GPU=L40S để mạnh hơn)
+    cpu=12,            # nhiều core cho multiprocessing (face-align CPU-bound)
+    memory=49152,      # 48 GB — mp_workers × frame buffer + models
+    timeout=21600,     # 6h
+)
+def process_data(shard_names, mp_workers: int = 1, limit_ratio: float = 1.0, max_samples: int = 0, detect_batch: int = 1):
+    """Process a GROUP of raw shards inside one container, writing one output tag per raw shard.
+
+    Parallelism across raw shards comes from spawning MULTIPLE CONTAINERS (each its own GPU) —
+    see the entrypoint. In-container multiprocessing (mp_workers>1, sharing one GPU) was measured
+    to give NO speedup: without CUDA MPS, the workers' GPU kernels time-slice serially, so each
+    runs ~N× slower (net ~0). Hence default mp_workers=1 → shards run sequentially in-process
+    (no spawn → no CUDA-multiprocessing fragility). mp_workers>1 kept only for experimentation.
     """
     sys.path.append("/root")
-    from src.data.preprocessors.vicocktail import ViCocktailPreprocessor
+    from scripts.modal.data_prep.shard_worker import process_one_shard
 
-    print(f"Processing (WebDataset shards) in {DATA_ROOT}, subset='{subset_name}', max_samples={max_samples or 'ALL'}...")
-    processor = ViCocktailPreprocessor(data_root=DATA_ROOT, use_precropped=False)
+    shard_names = list(shard_names or [])
+    if not shard_names:
+        return "no shards"
+    print(f"Container: {len(shard_names)} shards × mp_workers={mp_workers} "
+          f"(gpu={PROCESS_GPU}, detect_batch={detect_batch}): {shard_names}")
 
-    shard_pattern = f"{OUTPUT_ROOT}/vicocktail-{subset_name}-%06d.tar"
-    processor.run(
-        shard_pattern=shard_pattern,
-        filter_keyword=subset_name,
-        limit_ratio=limit_ratio,
-        max_samples=(max_samples or None),
-    )
-    volume.commit()
-    return f"Sharded subset '{subset_name}' → {shard_pattern}"
+    tasks = [(DATA_ROOT, OUTPUT_ROOT, s, limit_ratio, max_samples, detect_batch) for s in shard_names]
+
+    if mp_workers <= 1:
+        # Sequential in-process: robust (no spawn), GPU fully used by the one worker.
+        # Commit after EACH shard → per-shard resume even if the container dies mid-group.
+        results = []
+        for t in tasks:
+            results.append(process_one_shard(t))
+            volume.commit()
+    else:
+        # Experimental: share one GPU across processes (measured no gain — see docstring).
+        import multiprocessing as mp
+        from scripts.modal.data_prep.shard_worker import prewarm_model_cache
+        # spawn children read sys.path from PYTHONPATH (not our runtime edits) → export /root.
+        os.environ["PYTHONPATH"] = "/root" + (os.pathsep + os.environ["PYTHONPATH"] if os.environ.get("PYTHONPATH") else "")
+        prewarm_model_cache()  # one CPU download → workers don't race it
+        ctx = mp.get_context("spawn")  # CUDA requires 'spawn'
+        with ctx.Pool(processes=min(mp_workers, len(tasks))) as pool:
+            results = pool.map(process_one_shard, tasks)
+        volume.commit()  # workers wrote into the mounted volume; commit once
+
+    for r in results:
+        print(f"  {r}")
+    n_ok = sum(r.startswith("OK") for r in results)
+    n_skip = sum(r.startswith("SKIP") for r in results)
+    return f"Container: {n_ok} ok, {n_skip} skip, {len(results) - n_ok - n_skip} fail / {len(results)}"
 
 @app.function(
     image=image,
@@ -198,12 +246,23 @@ def extract_features_shard(subset_name):
 
 
 @app.local_entrypoint()
-def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0):
+def main(action: str = "download", subset: str = "train", limit_ratio: float = 1.0, max_samples: int = 0,
+         containers: int = 4, mp_workers: int = 1, detect_batch: int = 1, max_shards: int = 0):
     """
     Args:
-        action: 'download', 'download_one', 'process' (raw→feature shards), 'inspect', 'inspect_output'
+        action: 'download', 'download_one', 'process' (raw→frame shards), 'inspect', 'inspect_output'
+            (warm caches first: `modal run scripts/modal/warm_cache.py`)
         subset: 'train' / 'avvn-test-000000' / 'test_snr_...' / 'all' (filter keyword on raw shards)
-        max_samples: >0 limits total samples for a cheap smoke (process action).
+        max_samples: >0 limits samples PER shard for a cheap smoke (process action).
+        containers: số container GPU chạy SONG SONG (process) — ĐÂY là đòn bẩy tốc độ chính (mỗi
+            container 1 GPU riêng). ~4-8; cân nhắc lịch sự với volume/quota dùng chung.
+        mp_workers: worker/container chia sẻ 1 GPU. DEFAULT 1 — đo thực tế mp>1 KHÔNG nhanh hơn
+            (kernel time-slice nối tiếp khi thiếu CUDA MPS). Để >1 chỉ khi thử nghiệm.
+        detect_batch: gom frame qua SFD/GPU 1 lần. DEFAULT 1 — đo thực tế batching KHÔNG giúp (CPU-bound).
+        max_shards: >0 chỉ xử lý N raw shard đầu (cho smoke test mp trước khi chạy full).
+
+    GPU: mặc định T4 (xem PROCESS_GPU ở đầu file); thử L40S bằng `PROCESS_GPU=L40S modal run ...`.
+    Tổng song song = containers × mp_workers. Mỗi raw shard → output tag riêng + resume-skip riêng.
     """
     if action == "download_one":
         print(f"Smoke test: downloading ONE shard '{subset}'...")
@@ -214,11 +273,26 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
         download_shard_subset.remote(subset)
 
     elif action == "process":
-        # Raw .tar shards → feature WebDataset shards (face-alignment crop + Whisper/ResNet extract).
-        print(f"Starting GPU sharded processing for '{subset}' (ratio={limit_ratio}, max_samples={max_samples or 'ALL'})...")
-        result = process_data.remote(subset, limit_ratio, max_samples)
-        print(result)
-        
+        # Raw shards → frame shards. 2 tầng song song: `containers` GPU container chạy đồng thời,
+        # mỗi container multiprocessing `mp_workers` shard cùng lúc trên 1 GPU. Resume per-shard.
+        names = list_raw_shards.remote(subset)
+        if not names:
+            print(f"No raw shards match subset='{subset}' in {DATA_ROOT}.")
+            return
+        if max_shards:
+            names = names[:max_shards]
+        # NOTE: run `modal run scripts/modal/warm_cache.py` ONCE before this (bakes SFD/FAN +
+        # seeds whisper into hf-hub-cache) so fanned-out containers don't race weight downloads.
+        # Round-robin split → cân tải giữa các container.
+        groups = [g for g in (names[i::containers] for i in range(containers)) if g]
+        total_par = len(groups) * mp_workers
+        print(f"Processing '{subset}': {len(names)} shards across {len(groups)} container(s) × "
+              f"{mp_workers} workers = {total_par} parallel (gpu={PROCESS_GPU}, detect_batch={detect_batch}).")
+        # Spawn all containers concurrently, then gather.
+        handles = [process_data.spawn(g, mp_workers, limit_ratio, max_samples, detect_batch) for g in groups]
+        for h in handles:
+            print(f"   → {h.get()}")
+
     elif action == "inspect":
          print(f"Inspecting data for {subset}...")
          inspect_data.remote(subset)
