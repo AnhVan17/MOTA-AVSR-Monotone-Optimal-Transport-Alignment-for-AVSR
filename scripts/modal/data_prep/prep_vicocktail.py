@@ -132,7 +132,11 @@ def process_data(shard_names, mp_workers: int = 1, limit_ratio: float = 1.0, max
 
     if mp_workers <= 1:
         # Sequential in-process: robust (no spawn), GPU fully used by the one worker.
-        results = [process_one_shard(t) for t in tasks]
+        # Commit after EACH shard → per-shard resume even if the container dies mid-group.
+        results = []
+        for t in tasks:
+            results.append(process_one_shard(t))
+            volume.commit()
     else:
         # Experimental: share one GPU across processes (measured no gain — see docstring).
         import multiprocessing as mp
@@ -143,8 +147,8 @@ def process_data(shard_names, mp_workers: int = 1, limit_ratio: float = 1.0, max
         ctx = mp.get_context("spawn")  # CUDA requires 'spawn'
         with ctx.Pool(processes=min(mp_workers, len(tasks))) as pool:
             results = pool.map(process_one_shard, tasks)
+        volume.commit()  # workers wrote into the mounted volume; commit once
 
-    volume.commit()  # workers wrote into the mounted volume; commit once
     for r in results:
         print(f"  {r}")
     n_ok = sum(r.startswith("OK") for r in results)
