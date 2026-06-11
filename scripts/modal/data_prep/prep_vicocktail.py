@@ -32,29 +32,9 @@ image = PREPROC_IMAGE.add_local_dir("scripts", remote_path="/root/scripts")
 
 app = modal.App(APP_NAME)
 volume = get_volume()
-# Team's shared HF cache volume (whisper loads from here via HF_HOME=HF_CACHE_DIR, set on the image).
+# Team's shared HF cache volume — whisper loads from here via HF_HOME=HF_CACHE_DIR (set on the
+# image). Seed it ONCE up-front with `modal run scripts/modal/warm_cache.py` (separate concern).
 hf_cache = modal.Volume.from_name("hf-hub-cache", create_if_missing=True)
-
-
-@app.function(
-    image=image,
-    volumes={HF_CACHE_DIR: hf_cache},
-    timeout=1800,
-    secrets=[modal.Secret.from_name("huggingface-secret")],
-)
-def populate_hf_cache():
-    """Download whisper-small into the shared hf-hub-cache volume ONCE (idempotent).
-
-    Run BEFORE fanning out so the many workers READ whisper from the volume instead of each
-    cold-downloading it concurrently (which races the cache + hits HF rate limits).
-    """
-    sys.path.append("/root")
-    from transformers import WhisperFeatureExtractor, WhisperModel
-
-    WhisperModel.from_pretrained("openai/whisper-small")
-    WhisperFeatureExtractor.from_pretrained("openai/whisper-small")
-    hf_cache.commit()
-    return "hf cache ready (whisper-small)"
 
 @app.function(
     image=image,
@@ -270,8 +250,8 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
          containers: int = 4, mp_workers: int = 1, detect_batch: int = 1, max_shards: int = 0):
     """
     Args:
-        action: 'prepare' (bake image + seed hf-cache), 'download', 'download_one',
-            'process' (raw→frame shards), 'inspect', 'inspect_output'
+        action: 'download', 'download_one', 'process' (raw→frame shards), 'inspect', 'inspect_output'
+            (warm caches first: `modal run scripts/modal/warm_cache.py`)
         subset: 'train' / 'avvn-test-000000' / 'test_snr_...' / 'all' (filter keyword on raw shards)
         max_samples: >0 limits samples PER shard for a cheap smoke (process action).
         containers: số container GPU chạy SONG SONG (process) — ĐÂY là đòn bẩy tốc độ chính (mỗi
@@ -284,14 +264,7 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
     GPU: mặc định T4 (xem PROCESS_GPU ở đầu file); thử L40S bằng `PROCESS_GPU=L40S modal run ...`.
     Tổng song song = containers × mp_workers. Mỗi raw shard → output tag riêng + resume-skip riêng.
     """
-    if action == "prepare":
-        # Warm everything ONCE up-front: building `image` bakes SFD/FAN weights into the image
-        # layer (run_function at build), and populate_hf_cache seeds whisper-small into the shared
-        # hf-hub-cache volume. After this, every `process` container starts instantly (no download).
-        print("Preparing: build image (bakes SFD/FAN) + seed whisper into hf-hub-cache volume...")
-        print(populate_hf_cache.remote())
-
-    elif action == "download_one":
+    if action == "download_one":
         print(f"Smoke test: downloading ONE shard '{subset}'...")
         print(download_one_shard.remote(subset))
 
@@ -308,8 +281,8 @@ def main(action: str = "download", subset: str = "train", limit_ratio: float = 1
             return
         if max_shards:
             names = names[:max_shards]
-        # Populate the shared HF cache ONCE (whisper) so fanned-out workers read, not re-download.
-        print(populate_hf_cache.remote())
+        # NOTE: run `modal run scripts/modal/warm_cache.py` ONCE before this (bakes SFD/FAN +
+        # seeds whisper into hf-hub-cache) so fanned-out containers don't race weight downloads.
         # Round-robin split → cân tải giữa các container.
         groups = [g for g in (names[i::containers] for i in range(containers)) if g]
         total_par = len(groups) * mp_workers
