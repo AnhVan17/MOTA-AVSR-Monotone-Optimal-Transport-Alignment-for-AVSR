@@ -1,15 +1,21 @@
-# Phase 1 Configuration (Inherits from base.yaml)
+# Phase 1 — QualityGate-only baseline (use_mqot=false) on the WebDataset FRAME shards.
+# Inherits base.yaml; overrides data → webdataset frame shards, and turns the visual backbone on.
 defaults:
   - base
+
+model:
+  use_backbones: true # frame shards yield raw frames [T,C,H,W] → ResNet runs at train time
 
 loss:
   ctc_weight: 0.5
   ce_weight: 0.5
 
+data:
+  format: webdataset
+  train_shards: "/mnt/vicocktail_features/vicocktail-avvn-train-*.tar"
+  val_shards: "/mnt/vicocktail_features/vicocktail-avvn-test-000000-*.tar" # clean test (process test sets first)
+  batch_size: 16
+  shuffle_buffer: 2000
+
 logging:
   checkpoint_dir: "/mnt/checkpoints/phase1"
-
-data:
-  train_manifest: "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000_manifest.jsonl"
-  val_manifest: "/mnt/vicocktail_features/avvn-val_manifest.jsonl"
-  data_root: "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000"

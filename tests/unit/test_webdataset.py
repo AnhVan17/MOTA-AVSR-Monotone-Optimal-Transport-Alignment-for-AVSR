@@ -4,6 +4,7 @@ Writes synthetic samples (uint8 mouth-crop frames + fp16 Whisper audio features)
 shards, then reads them back through the streaming reader and asserts the decoded dict
 matches what the Collator/model expect. No network, no heavy deps — synthetic tensors.
 """
+import pytest
 import torch
 
 from src.data.shards import write_feature_shards, build_webdataset
@@ -98,3 +99,27 @@ def test_val_order_is_deterministic(tmp_path):
     order1 = [s["rel_path"] for s in build_webdataset(shards, _FakeTokenizer(), train=False)]
     order2 = [s["rel_path"] for s in build_webdataset(shards, _FakeTokenizer(), train=False)]
     assert order1 == order2 == [f"sample{i:04d}" for i in range(6)]
+
+
+def test_slice_caps_sample_count(tmp_path):
+    """dataset.slice(n) caps the stream — backs the loader's max_samples for cheap smoke runs."""
+    pattern = str(tmp_path / "s-%06d.tar")
+    write_feature_shards(_samples(10), pattern, maxcount=4)
+    shards = sorted(str(p) for p in tmp_path.glob("s-*.tar"))
+
+    ds = build_webdataset(shards, _FakeTokenizer(), train=False).slice(3)
+    assert len(list(ds)) == 3
+
+
+def test_glob_pattern_expands_to_shards(tmp_path):
+    """A '*' glob string must expand to matching shards (webdataset only does brace expansion)."""
+    pattern = str(tmp_path / "g-%06d.tar")
+    write_feature_shards(_samples(6), pattern, maxcount=2)  # → 3 shards
+    ds = build_webdataset(str(tmp_path / "g-*.tar"), _FakeTokenizer(), train=False)
+    assert len(list(ds)) == 6
+
+
+def test_empty_glob_raises_not_silent(tmp_path):
+    """A glob matching nothing must raise — never silently train on 0 samples."""
+    with pytest.raises(FileNotFoundError):
+        build_webdataset(str(tmp_path / "nomatch-*.tar"), _FakeTokenizer(), train=False)

@@ -1,0 +1,19 @@
+# Smoke config — validate the FRAME-shard + MQOT path end-to-end on Modal (cheap).
+# Inherits phase2_mqot (use_mqot + mqot params, which inherits phase1_base → webdataset+backbones).
+# Shrinks to 1 shard / few samples / 1 epoch; pretrained_path → the phase1_frames_trial checkpoint
+# (strict=False: MQOT params init fresh), mirroring the real phase1 → phase2 warm-start.
+defaults:
+  - phase2_mqot
+
+data:
+  train_shards: "/mnt/vicocktail_features/vicocktail-avvn-train-000000-*.tar"
+  val_shards: "/mnt/vicocktail_features/vicocktail-avvn-train-000000-*.tar"
+  max_samples: 48
+  batch_size: 2
+
+training:
+  num_epochs: 1
+  pretrained_path: "/mnt/checkpoints/phase1_frames_trial/best_model.pt"
+
+logging:
+  checkpoint_dir: "/mnt/checkpoints/phase2_frames_trial"

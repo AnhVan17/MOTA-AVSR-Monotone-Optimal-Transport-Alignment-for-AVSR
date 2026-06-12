@@ -140,6 +140,16 @@ def build_webdataset(
             "rel_path": sample["__key__"],
         }
 
+    # webdataset expands brace patterns ("{000..099}") but NOT shell globs ("*"); a "*" pattern
+    # would be passed through as a literal (missing) filename → silently 0 samples. Expand it here
+    # and fail loud on no match (never silently train on an empty stream).
+    if isinstance(shards, str) and "*" in shards:
+        import glob
+        matched = sorted(glob.glob(shards))
+        if not matched:
+            raise FileNotFoundError(f"No shards matched glob pattern: {shards}")
+        shards = matched
+
     ds = wds.WebDataset(shards, shardshuffle=train, handler=wds.warn_and_continue)
     if train and shuffle_buffer > 0:
         ds = ds.shuffle(shuffle_buffer)

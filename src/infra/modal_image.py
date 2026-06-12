@@ -66,6 +66,7 @@ ML_TRAIN_IMAGE = (
         "matplotlib",
         "soundfile",
         "opencv-python-headless",
+        "webdataset==0.2.79",  # training reads frame WebDataset shards (src/data/shards.py)
         # Re-pin numpy<2: this separate layer re-resolves deps and would otherwise
         # upgrade numpy to 2.x, breaking torch 2.1.2's ABI (compiled against numpy 1.x).
         "numpy<2",

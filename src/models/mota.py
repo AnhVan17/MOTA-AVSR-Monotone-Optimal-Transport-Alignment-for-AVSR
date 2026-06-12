@@ -1,7 +1,7 @@
 """
 Architecture:
-- Audio: Whisper encoder (frozen/finetune) -> 768
-- Visual: ResNet18 (frozen/finetune) -> 512
+- Audio: precomputed Whisper features -> 768 (raw-audio Whisper backbone optional, OFF by default)
+- Visual: raw mouth-crop frames -> ResNet18 (use_backbones) -> 512, or precomputed features
 - Fusion Stage 1: Quality gating (Coarse)
 - Fusion Stage 2: M-QOT + Guided Attention (Fine/Optional)
 - Encoder: Conformer
@@ -53,21 +53,30 @@ class MOTA(nn.Module):
         
         # Toggle Flags
         self.use_mqot = config.get('use_mqot', False)
+        # use_backbones → run the VISUAL ResNet on raw frames at train time (frame-shard pipeline).
+        # use_audio_backbone → run Whisper on RAW audio; OFF by default since the shards already
+        # store precomputed Whisper features (the model reads them directly).
         self.use_backbones = config.get('use_backbones', False)
+        self.use_audio_backbone = config.get('use_audio_backbone', False)
         
         # ============================================================
-        # STAGE 0: OPTIONAL BACKBONES (E2E Readiness)
+        # STAGE 0: OPTIONAL BACKBONES (raw → features at train time)
         # ============================================================
+        # Visual ResNet: needed when the dataset yields raw frames [B,T,C,H,W] (WebDataset frame
+        # shards). Frozen by default (Section A); per-epoch frame augmentation is upstream in the loader.
         if self.use_backbones:
-            # Audio: Whisper
-            self.whisper = WhisperModel.from_pretrained("openai/whisper-tiny")
-            self.whisper.encoder.requires_grad_(False) # Default Frozen
-            
-            # Visual: ResNet18
-            resnet = resnet18(weights=ResNet18_Weights.DEFAULT)
-            # Remove FC and AvgPool to get spatial/temporal features
-            self.visual_backbone = nn.Sequential(*list(resnet.children())[:-2]) 
-            self.visual_backbone.requires_grad_(False) # Default Frozen
+            # visual_pretrained=False → no ImageNet download (offline tests / from-scratch ablation).
+            visual_weights = ResNet18_Weights.DEFAULT if config.get('visual_pretrained', True) else None
+            resnet = resnet18(weights=visual_weights)
+            # Strip FC + AvgPool → spatial feature map; pooled per-frame in forward_backbones.
+            self.visual_backbone = nn.Sequential(*list(resnet.children())[:-2])
+            self.visual_backbone.requires_grad_(False)  # frozen; Section C: gate on train_visual_backbone
+
+        # Audio Whisper backbone: ONLY for true raw-audio E2E. Off by default — the shards store
+        # precomputed Whisper features, so loading Whisper here otherwise = dead weight.
+        if self.use_audio_backbone:
+            self.whisper = WhisperModel.from_pretrained("openai/whisper-small")
+            self.whisper.encoder.requires_grad_(False)
             
         # ============================================================
         # STAGE 1: COARSE FUSION (QualityGate - Baseline)
@@ -153,7 +162,8 @@ class MOTA(nn.Module):
             # Flatten time: [B*T, C, H, W]
             visual_flat = visual.view(B * T, C, H, W)
             
-            # Forward ResNet (Frozen)
+            # Forward ResNet. Frozen for Section A; for Section C E2E this no_grad must become
+            # conditional on a train_visual_backbone flag. TODO(Section C).
             with torch.no_grad():
                 # self.visual_backbone outputs [B*T, 512, H', W']
                 feat_map = self.visual_backbone(visual_flat)
@@ -168,9 +178,8 @@ class MOTA(nn.Module):
             # Reshape back: [B, T, 512]
             visual = feat.view(B, T, -1)
 
-        # Audio: [B, Samples] or [B, T, 768]
-        # Current GridDataset returns [B, T, 768] even in raw mode (AudioFeatureExtractor)
-        # So we pass through.
+        # Audio: datasets/shards already yield precomputed Whisper features [B, T_a, 768], so we
+        # pass through. (If use_audio_backbone is ever wired for raw waveforms, run self.whisper here.)
         
         return audio, visual
 
