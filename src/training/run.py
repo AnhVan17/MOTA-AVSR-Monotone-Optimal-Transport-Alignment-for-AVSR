@@ -25,12 +25,16 @@ def run_training(config: Dict) -> Trainer:
     Returns:
         Trainer sau khi train xong (tiện cho test/inspection).
     """
+    data_format = str(config["data"].get("format", "jsonl")).lower()
     train_manifest = config["data"].get("train_manifest")
-    if train_manifest and not os.path.exists(train_manifest):
+    # WebDataset (frame shards) reads data.train_shards/val_shards — there is no jsonl manifest,
+    # so skip the manifest existence check (train_manifest may still be inherited from base.yaml).
+    if data_format != "webdataset" and train_manifest and not os.path.exists(train_manifest):
         logger.error(f"Train manifest không tồn tại: {train_manifest}")
         raise FileNotFoundError(train_manifest)
 
-    logger.info(f"Device-agnostic training | manifest={train_manifest}")
+    source = config["data"].get("train_shards") if data_format == "webdataset" else train_manifest
+    logger.info(f"Device-agnostic training | format={data_format} | source={source}")
     trainer = Trainer(config)
     trainer.train()
     return trainer

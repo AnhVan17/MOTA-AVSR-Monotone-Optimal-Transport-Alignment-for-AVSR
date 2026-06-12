@@ -133,6 +133,11 @@ def _build_webdataset_loader(config: Dict, data_cfg: Dict, tokenizer, mode: str)
         shuffle_buffer=data_cfg.get("shuffle_buffer", 1000),
     )
 
+    # Cheap smoke runs: cap the stream to N samples. Real training leaves this unset (unbounded).
+    max_samples = data_cfg.get("max_samples")
+    if max_samples:
+        dataset = dataset.slice(int(max_samples))
+
     pad_id = getattr(tokenizer, "eot_token_id", 50257)
     return DataLoader(
         dataset,

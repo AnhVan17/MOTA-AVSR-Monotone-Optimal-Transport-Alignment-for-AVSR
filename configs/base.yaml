@@ -15,7 +15,9 @@ model:
 
   # Flags
   use_mqot: false # Default: Disabled
-  use_backbones: false # Default: Feature-based (Offline backbones)
+  use_backbones: false # Visual ResNet on raw frames; set true for WebDataset frame shards
+  use_audio_backbone: false # Whisper on RAW audio; off — shards store precomputed Whisper feats
+  visual_pretrained: true # ResNet18 ImageNet weights; false = from-scratch / offline tests
 
 loss:
   ctc_weight: 0.3

@@ -17,7 +17,7 @@ loss:
   quality_loss_weight: 0.1
 
 data:
-  batch_size: 24 # Reduced for OT Memory
+  batch_size: 12 # Reduced for OT memory + raw frames (heavier than precomputed features)
 
 training:
   learning_rate: 5e-5 # Fine-tuning LR

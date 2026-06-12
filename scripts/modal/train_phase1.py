@@ -38,13 +38,18 @@ def train_remote(manifest_path: str = None, config_path: str = None):
     final_manifest = manifest_path if manifest_path else MANIFEST_PATH
     final_config_path = config_path if config_path else "/root/configs/phase1_base.yaml"
 
-    if not os.path.exists(final_manifest):
-        logger.error(f"Manifest {final_manifest} not found. Run preprocessing first.")
-        # Debug list dir if default
+    # Load config first so we can detect the data format.
+    config = load_config(final_config_path)
+
+    # WebDataset (frame shards): no jsonl manifest — data.train_shards/val_shards drive the loader.
+    if str(config.get("data", {}).get("format", "")).lower() == "webdataset":
+        logger.info(f"Loaded config from {final_config_path} (format=webdataset)")
+        run_training(config)
         return
 
-    # Load Config from YAML (with inheritance)
-    config = load_config(final_config_path)
+    if not os.path.exists(final_manifest):
+        logger.error(f"Manifest {final_manifest} not found. Run preprocessing first.")
+        return
     
     # Override manifest in config if provided override differs
     if manifest_path:

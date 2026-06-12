@@ -21,18 +21,20 @@ volume = get_volume()
     gpu="A10G",
     timeout=7200
 )
-def train_remote():
+def train_remote(config_path: str = None):
     # THIN Modal wrapper: set up container paths, then call the pure training logic
     # (src/training/run.py).
     sys.path.append("/root")
     from src.utils.config_utils import load_config
     from src.training.run import run_training
 
-    # Load config (inheritance). use_mqot=True lives in phase2_mqot.yaml.
-    config = load_config("/root/configs/phase2_mqot.yaml")
-    # run_training validates the manifest in config + selects device (cuda on Modal GPU).
+    # Load config (inheritance). use_mqot=True lives in phase2_mqot.yaml; pass --config-path
+    # /root/configs/phase2_frames_trial.yaml for the frame-shard smoke.
+    final_config_path = config_path if config_path else "/root/configs/phase2_mqot.yaml"
+    config = load_config(final_config_path)
+    # run_training selects device (cuda on Modal GPU); the webdataset path needs no manifest.
     run_training(config)
 
 @app.local_entrypoint()
-def main():
-    train_remote.remote()
+def main(config_path: str = None):
+    train_remote.remote(config_path=config_path)
