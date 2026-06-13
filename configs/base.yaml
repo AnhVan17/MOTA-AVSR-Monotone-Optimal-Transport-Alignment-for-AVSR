@@ -9,8 +9,8 @@ model:
   num_encoder_layers: 4
   num_decoder_layers: 2
   num_heads: 4
-  vocab_size: 51865 # Whisper full vocab (50258 tokens + 807 lang-specific = max token ID ~51140)
-  blank_id: 50257 # EOT token for Whisper
+  vocab_size: 2000 # Vietnamese SentencePiece (compact; ViCocktail uses 2057). MUST match the SP model.
+  blank_id: 4 # <blank> CTC id in the SP model (loss/decoder derive from tokenizer.eot_token_id)
   dropout: 0.1
 
   # Flags
@@ -18,6 +18,11 @@ model:
   use_backbones: false # Visual ResNet on raw frames; set true for WebDataset frame shards
   use_audio_backbone: false # Whisper on RAW audio; off — shards store precomputed Whisper feats
   visual_pretrained: true # ResNet18 ImageNet weights; false = from-scratch / offline tests
+
+tokenizer:
+  type: sentencepiece # 'sentencepiece' (Vietnamese ~2000) | 'whisper' (51865, GRID/legacy)
+  model_path: assets/tokenizer/vi_sp_2000.model
+  language: vi
 
 loss:
   ctc_weight: 0.3
