@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.optim as optim
 from typing import Dict
@@ -16,6 +17,7 @@ from src.utils.device import get_device, supports_amp, make_grad_scaler
 from src.utils.common import (
     AverageMeter,
     save_checkpoint,
+    load_checkpoint,
     get_lr,
     EarlyStopping
 )
@@ -130,8 +132,14 @@ class Trainer:
         self.step = 0
         self.best_metric = float('inf')
 
-        # Load Pretrained / Resume
-        if config['training'].get('pretrained_path'):
+        # Load Pretrained / Resume.
+        # True resume (full state) takes precedence over pretrained (weights-only warm-start):
+        # a relaunched/preempted container picks up its own in-progress checkpoint, which already
+        # contains the warm-started weights — re-applying pretrained would clobber training progress.
+        resume_path = self._resolve_resume_path(config['training'], self.checkpoint_dir)
+        if resume_path:
+            self._resume_from(resume_path)
+        elif config['training'].get('pretrained_path'):
             self._load_checkpoint(config['training']['pretrained_path'])
 
         # 5. Validation Tools
@@ -170,9 +178,49 @@ class Trainer:
             
         except Exception as e:
             logger.error(f"Failed to load checkpoint: {e}")
-            # Decision: Don't crash, just start fresh if load fails? 
+            # Decision: Don't crash, just start fresh if load fails?
             # Better to Crash explicitely if path was provided but invalid.
             raise e
+
+    def _resume_from(self, path: str):
+        """True crash-resume: restore weights + optimizer + scheduler + epoch/step/best_metric.
+
+        Unlike _load_checkpoint (weights-only warm-start for cross-phase P1→P2), this restores the
+        full training state via load_checkpoint so a preempted run continues exactly where it left
+        off — same LR schedule, same optimizer moments, next epoch.
+        """
+        logger.info(f"Resuming training from {path}...")
+        ckpt = load_checkpoint(path, self.model, self.optimizer, self.plateau_scheduler, self.device)
+        self.start_epoch, self.step, self.best_metric = self._resume_state(ckpt)
+        logger.info(
+            f"Resumed at epoch {self.start_epoch} (step {self.step}, best_metric {self.best_metric:.4f})."
+        )
+
+    @staticmethod
+    def _resume_state(checkpoint: Dict) -> tuple:
+        """(start_epoch, step, best_metric) to resume from a loaded checkpoint dict.
+
+        The saved epoch already completed, so resume at epoch+1; step/best_metric carry over.
+        """
+        return checkpoint['epoch'] + 1, checkpoint['step'], checkpoint['best_metric']
+
+    @staticmethod
+    def _resolve_resume_path(train_cfg: Dict, checkpoint_dir):
+        """Checkpoint to resume from, or None (→ cold start / pretrained warm-start).
+
+        - explicit ``resume_path`` → that file if it exists (else None, don't crash);
+        - ``resume: true`` → latest ``epoch_*.pt`` in checkpoint_dir (auto multi-container recovery;
+          empty on first launch → None);
+        - neither → None.
+        """
+        explicit = train_cfg.get('resume_path')
+        if explicit:
+            return explicit if os.path.exists(explicit) else None
+        if train_cfg.get('resume'):
+            ckpts = sorted(Path(checkpoint_dir).glob('epoch_*.pt'),
+                           key=lambda p: int(p.stem.split('_')[1]))
+            return str(ckpts[-1]) if ckpts else None
+        return None
 
     def train(self):
         """Main Training Loop"""
