@@ -1,8 +1,8 @@
 # Smoke config — validate the FRAME-shard training path end-to-end on Modal (cheap).
-# Inherits phase1_base (webdataset + use_backbones); shrinks to 1 shard / few samples / 1 epoch.
+# Inherits phase1 (webdataset + use_backbones); shrinks to 1 shard / few samples / 1 epoch.
 # Isolated checkpoint_dir so we DON'T touch the team's checkpoints/phase1.
 defaults:
-  - phase1_base
+  - phase1
 
 data:
   train_shards: "/mnt/vicocktail_features/vicocktail-avvn-train-000000-*.tar"
@@ -14,4 +14,4 @@ training:
   num_epochs: 1
 
 logging:
-  checkpoint_dir: "/mnt/checkpoints/phase1_frames_trial"
+  checkpoint_dir: "/mnt/checkpoints/phase1_smoke"

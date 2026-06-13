@@ -53,7 +53,7 @@ def run_inference(
     # 1. Load Config & Model
     # We assume config is saved with checkpoint or we use default phase1
     # For now, load default phase1 config
-    config = load_config("/root/configs/phase1_base.yaml")
+    config = load_config("/root/configs/phase1.yaml")
     
     # Initialize Model
     model = create_model(config['model']).to(device)

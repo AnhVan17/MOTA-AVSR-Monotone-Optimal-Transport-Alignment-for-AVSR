@@ -22,7 +22,7 @@ volume = get_volume()
     image=ML_TRAIN_IMAGE,
     volumes={"/mnt": volume},
     gpu="A10G",         # A10G is good balance
-    timeout=7200        # 2 hours
+    timeout=21600       # 6h — headroom for a full-data calibration epoch (was 2h, too tight)
 )
 def train_remote(manifest_path: str = None, config_path: str = None):
     sys.path.append("/root")
@@ -36,7 +36,7 @@ def train_remote(manifest_path: str = None, config_path: str = None):
     
     # Defaults
     final_manifest = manifest_path if manifest_path else MANIFEST_PATH
-    final_config_path = config_path if config_path else "/root/configs/phase1_base.yaml"
+    final_config_path = config_path if config_path else "/root/configs/phase1.yaml"
 
     # Load config first so we can detect the data format.
     config = load_config(final_config_path)

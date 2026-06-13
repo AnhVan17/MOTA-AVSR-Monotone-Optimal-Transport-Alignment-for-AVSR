@@ -6,6 +6,9 @@ defaults:
 model:
   use_backbones: true # frame shards yield raw frames [T,C,H,W] → ResNet runs at train time
 
+training:
+  resume: true # 20 epochs > one Modal container → relaunch auto-resumes latest checkpoint
+
 loss:
   ctc_weight: 0.5
   ce_weight: 0.5
