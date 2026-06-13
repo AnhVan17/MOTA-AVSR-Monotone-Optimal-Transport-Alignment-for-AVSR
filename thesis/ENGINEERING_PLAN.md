@@ -125,6 +125,30 @@ Ruột đã là face-alignment (SFD+FAN) nhưng tên vẫn "FaceMesh" → gây h
 - Thứ tự chạy: **clean trước** (chốt pipeline + có số sớm) → **noisy** (SNR giảm dần).
 - WandB log: loss, WER/CER, transport map, gate weights, VRAM, time/epoch.
 
+### A.4b. Baseline đối chiếu + quyết định thiết kế (research AVSR 2023→2026, cập nhật 2026-06-12)
+
+**Baseline trực tiếp — ViCocktail** (CÙNG dataset 269h, Interspeech 2025, [arXiv 2506.04635](https://arxiv.org/abs/2506.04635)) — số PHẢI đối chiếu:
+
+| Model ViCocktail              | Vocab              | WER clean | WER −5dB | Ghi chú              |
+| ----------------------------- | ------------------ | --------- | -------- | -------------------- |
+| AV-HuBERT CTC/Attn (tốt nhất) | SentencePiece 2057 | **9.40%** | 15.34%   | init MuAViC (đa ngữ) |
+| Conformer CTC/Attn            | 2057               | 14.4%     | 28.22%   | init Auto-AVSR (Anh) |
+| Wav2Vec2 audio-only           | —                  | 7.53%     | 28.38%   | suy sụp khi nhiễu    |
+
+→ **Bar thực tế ~9.4% clean** (không phải "28–30%" draft cũ) — nhưng đạt nhờ **pretrained-init**. MOTA train **from-scratch** 269h → kỳ vọng WER cao hơn; đóng góp neo ở **fusion reliability-aware** (chứng minh qua ablation), không đua absolute WER.
+
+**Quyết định thiết kế (chốt 2026-06-12):**
+
+1. **Vocab → Vietnamese SentencePiece ~2000** (khớp ViCocktail 2057) thay Whisper 51865 → decoder 42M→3.6M, model 63.6M→**25.2M**. Artifact: `assets/tokenizer/vi_sp_2000.model`.
+2. **Init from-scratch** → **đo baseline trước**, revisit pretrained-visual nếu WER kém.
+3. Bug ngầm đã sửa: MQOT-config (yaml `mqot:` giờ tới model); whisper-tiny chết (đã bỏ).
+
+**Enhancement DEFER (sau baseline — "measure first"):**
+
+- **Modality dropout** (train audio-only / visual-only / AV) — nhiều paper 2025-26 (mWhisper-Flamingo, UASR-LLM) coi là chìa khoá noise-robustness.
+- **Pretrained visual init** (Conv3D+ResNet từ Auto-AVSR) — Section C, nếu baseline kém.
+- SOTA LLM-based (Llama-AVSR/MMS-LLaMA WER ~0.7%) cần data/compute lớn → ngoài ràng buộc 269h + ~2GiB.
+
 ### A.5. Bền vững vận hành
 
 - `volume.commit()` sau mỗi best epoch (đã có, cần verify giữ checkpoint).

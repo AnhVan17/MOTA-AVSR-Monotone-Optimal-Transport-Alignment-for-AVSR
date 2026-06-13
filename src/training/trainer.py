@@ -7,7 +7,7 @@ from tqdm import tqdm
 # Project Modules
 from src.models.mota import create_model
 from src.data.loader import build_dataloader
-from src.data.tokenizers.whisper import WhisperTokenizer
+from src.data.tokenizers import build_tokenizer
 from src.training.losses import create_loss
 from src.evaluation.metrics import MetricCalculator
 from src.evaluation.decoding import CTCDecoder
@@ -72,7 +72,7 @@ class Trainer:
         
         # 1. Tokenizer (required for DataLoader)
         logger.info("Initializing Tokenizer...")
-        self.tokenizer = WhisperTokenizer(model="openai/whisper-small", language="vi")
+        self.tokenizer = build_tokenizer(config)
 
         # 2. Data Loaders
         logger.info("Building DataLoaders...")
@@ -81,7 +81,9 @@ class Trainer:
         
         # 3. Model Initialization
         logger.info("Creating Model...")
-        self.model = create_model(config['model']).to(self.device)
+        # Pass the (sibling) `mqot` block into the model config so MQOTLayer reads the YAML
+        # hyperparams (lambda_time/epsilon/n_iters); otherwise it silently falls back to defaults.
+        self.model = create_model({**config['model'], 'mqot': config.get('mqot', {})}).to(self.device)
         logger.info(f"Model Params: {sum(p.numel() for p in self.model.parameters()):,}")
         
         # 3. Optimization Setup
@@ -135,7 +137,8 @@ class Trainer:
         # 5. Validation Tools
         # (self.tokenizer đã tạo ở trên và được truyền vào dataloader → không gán lại.)
         self.metric_calc = MetricCalculator()
-        blank_id = config['model'].get('blank_id', 50257)
+        # Blank for greedy CTC decode = tokenizer's eot/blank id (consistent with create_loss).
+        blank_id = getattr(self.tokenizer, 'eot_token_id', config['model'].get('blank_id', 50257))
         self.decoder = CTCDecoder(self.tokenizer, blank_id=blank_id)
 
         # 6. WandB (lazy — only if use_wandb: true in config)

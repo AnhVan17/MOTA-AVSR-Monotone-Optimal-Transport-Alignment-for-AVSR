@@ -67,12 +67,14 @@ ML_TRAIN_IMAGE = (
         "soundfile",
         "opencv-python-headless",
         "webdataset==0.2.79",  # training reads frame WebDataset shards (src/data/shards.py)
+        "sentencepiece==0.2.0",  # Vietnamese SentencePiece tokenizer (src/data/tokenizers/sentencepiece.py)
         # Re-pin numpy<2: this separate layer re-resolves deps and would otherwise
         # upgrade numpy to 2.x, breaking torch 2.1.2's ABI (compiled against numpy 1.x).
         "numpy<2",
     )
     .add_local_dir("configs", remote_path="/root/configs")
     .add_local_dir("src", remote_path="/root/src")
+    .add_local_dir("assets", remote_path="/root/assets")  # Vietnamese SentencePiece model
 )
 
 # Data preprocessing: heavier deps (feature extraction, face detection, audio). Ships src.
