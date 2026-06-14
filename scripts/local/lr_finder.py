@@ -6,7 +6,7 @@ Plot loss vs LR -> pick the LR at the "elbow" (where loss starts dropping sharpl
 Output: optimal_lr, loss_curve.png
 
 Usage:
-    python scripts/local/lr_finder.py --config configs/phase1_base.yaml --max_lr 1e-2 --num_batches 100
+    python scripts/local/lr_finder.py --config configs/phase1.yaml --max_lr 1e-2 --num_batches 100
 """
 import argparse
 import torch
@@ -152,7 +152,7 @@ def find_optimal_lr(
 
 def main():
     parser = argparse.ArgumentParser(description="LR Range Test for MOTA")
-    parser.add_argument("--config", default="configs/phase1_base.yaml")
+    parser.add_argument("--config", default="configs/phase1.yaml")
     parser.add_argument("--min_lr", type=float, default=1e-7)
     parser.add_argument("--max_lr", type=float, default=1e-2)
     parser.add_argument("--num_batches", type=int, default=100)

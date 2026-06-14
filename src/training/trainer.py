@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.optim as optim
 from typing import Dict
@@ -16,6 +17,7 @@ from src.utils.device import get_device, supports_amp, make_grad_scaler
 from src.utils.common import (
     AverageMeter,
     save_checkpoint,
+    load_checkpoint,
     get_lr,
     EarlyStopping
 )
@@ -40,6 +42,8 @@ def _get_wandb_logger(config: Dict):
         _wandb_logger = WandbLogger(
             project=config['logging'].get('wandb_project', 'mota-avsr'),
             name=config['logging'].get('wandb_name', None),
+            id=config['logging'].get('wandb_id', None),
+            resume=config['logging'].get('wandb_resume', 'allow'),
             config=config,
         )
         return _wandb_logger
@@ -129,9 +133,17 @@ class Trainer:
         self.start_epoch = 0
         self.step = 0
         self.best_metric = float('inf')
+        self.log_interval = config['logging'].get('log_interval', 50)  # wandb per-step cadence
+        self.train_wer_interval = config['logging'].get('train_wer_interval', 500)  # periodic train WER (0=off)
 
-        # Load Pretrained / Resume
-        if config['training'].get('pretrained_path'):
+        # Load Pretrained / Resume.
+        # True resume (full state) takes precedence over pretrained (weights-only warm-start):
+        # a relaunched/preempted container picks up its own in-progress checkpoint, which already
+        # contains the warm-started weights — re-applying pretrained would clobber training progress.
+        resume_path = self._resolve_resume_path(config['training'], self.checkpoint_dir)
+        if resume_path:
+            self._resume_from(resume_path)
+        elif config['training'].get('pretrained_path'):
             self._load_checkpoint(config['training']['pretrained_path'])
 
         # 5. Validation Tools
@@ -170,9 +182,49 @@ class Trainer:
             
         except Exception as e:
             logger.error(f"Failed to load checkpoint: {e}")
-            # Decision: Don't crash, just start fresh if load fails? 
+            # Decision: Don't crash, just start fresh if load fails?
             # Better to Crash explicitely if path was provided but invalid.
             raise e
+
+    def _resume_from(self, path: str):
+        """True crash-resume: restore weights + optimizer + scheduler + epoch/step/best_metric.
+
+        Unlike _load_checkpoint (weights-only warm-start for cross-phase P1→P2), this restores the
+        full training state via load_checkpoint so a preempted run continues exactly where it left
+        off — same LR schedule, same optimizer moments, next epoch.
+        """
+        logger.info(f"Resuming training from {path}...")
+        ckpt = load_checkpoint(path, self.model, self.optimizer, self.plateau_scheduler, self.device)
+        self.start_epoch, self.step, self.best_metric = self._resume_state(ckpt)
+        logger.info(
+            f"Resumed at epoch {self.start_epoch} (step {self.step}, best_metric {self.best_metric:.4f})."
+        )
+
+    @staticmethod
+    def _resume_state(checkpoint: Dict) -> tuple:
+        """(start_epoch, step, best_metric) to resume from a loaded checkpoint dict.
+
+        The saved epoch already completed, so resume at epoch+1; step/best_metric carry over.
+        """
+        return checkpoint['epoch'] + 1, checkpoint['step'], checkpoint['best_metric']
+
+    @staticmethod
+    def _resolve_resume_path(train_cfg: Dict, checkpoint_dir):
+        """Checkpoint to resume from, or None (→ cold start / pretrained warm-start).
+
+        - explicit ``resume_path`` → that file if it exists (else None, don't crash);
+        - ``resume: true`` → latest ``epoch_*.pt`` in checkpoint_dir (auto multi-container recovery;
+          empty on first launch → None);
+        - neither → None.
+        """
+        explicit = train_cfg.get('resume_path')
+        if explicit:
+            return explicit if os.path.exists(explicit) else None
+        if train_cfg.get('resume'):
+            ckpts = sorted(Path(checkpoint_dir).glob('epoch_*.pt'),
+                           key=lambda p: int(p.stem.split('_')[1]))
+            return str(ckpts[-1]) if ckpts else None
+        return None
 
     def train(self):
         """Main Training Loop"""
@@ -221,11 +273,24 @@ class Trainer:
                 f"Val WER: {val_metrics.get('wer', 0):.2f}% | "
                 f"LR: {get_lr(self.optimizer):.2e}"
             )
-            
+
+            # WandB per-epoch
+            if self.wandb:
+                self.wandb.log({
+                    "epoch": epoch + 1,
+                    "train/epoch_loss": train_metrics['loss'],
+                    "val/loss": val_metrics['loss'],
+                    "val/wer": val_metrics.get('wer', 0),
+                    "val/cer": val_metrics.get('cer', 0),
+                }, step=self.step)
+
             # 6. Early Stopping
             if self.early_stopping(current_metric, epoch):
                 logger.info("Early stopping triggered. Training finished.")
                 break
+
+        if self.wandb:
+            self.wandb.finish()
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
         self.model.train()
@@ -320,6 +385,26 @@ class Trainer:
             if grad_norm > 0:
                  postfix['norm'] = f"{grad_norm:.2f}"
             pbar.set_postfix(postfix)
+
+            # WandB per-step (every log_interval steps; no-op when wandb disabled)
+            if self.wandb and self.step % self.log_interval == 0:
+                self.wandb.log({
+                    "train/loss": loss_val,
+                    "train/ctc_loss": loss_dict['ctc_loss'].item(),
+                    "train/ce_loss": loss_dict['ce_loss'].item(),
+                    "train/lr": get_lr(self.optimizer),
+                    "train/grad_norm": float(grad_norm),
+                }, step=self.step)
+
+            # WandB train WER (periodic, CTC-greedy on the current batch — early in-epoch signal).
+            # CTC greedy ONLY (not AR): the AR decoder runs teacher-forced here, so its WER would be
+            # unrealistically optimistic. Cheap at this cadence; val/wer remains the source of truth.
+            if self.wandb and self.train_wer_interval > 0 and self.step % self.train_wer_interval == 0:
+                with torch.no_grad():
+                    pred_text = self.decoder.decode_batch(outputs['ctc_logits'], method='greedy')
+                    ref_text = self.decoder.decode_targets(targets)
+                    train_wer = self.metric_calc.compute_wer(pred_text, ref_text)
+                self.wandb.log({"train/wer": train_wer}, step=self.step)
             
         return {'loss': meter.avg}
 

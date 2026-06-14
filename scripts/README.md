@@ -41,7 +41,7 @@ python scripts/local/smoke_test.py --device cpu     # force CPU
 python scripts/local/smoke_test.py --no-mqot        # disable MQOT
 
 # LR range test
-python scripts/local/lr_finder.py --config configs/phase1_base.yaml
+python scripts/local/lr_finder.py --config configs/phase1.yaml
 
 # Data utilities (run from repo root)
 python scripts/local/data/split_manifest.py

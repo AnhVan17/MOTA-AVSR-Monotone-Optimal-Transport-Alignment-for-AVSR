@@ -30,7 +30,8 @@ class WandbLogger:
         project: str = "mota-avsr",
         name: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
-        resume: bool = False,
+        resume=False,
+        id: Optional[str] = None,
     ):
         """
         Args:
@@ -51,6 +52,7 @@ class WandbLogger:
         self.run = wandb.init(
             project=project,
             name=name,
+            id=id,                 # fixed id + resume="allow" → reconnect to the same run on relaunch
             config=config,
             resume=resume,
             settings=wandb.Settings(_disable_stats=True),

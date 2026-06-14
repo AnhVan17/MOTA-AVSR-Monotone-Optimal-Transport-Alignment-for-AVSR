@@ -230,7 +230,7 @@ Ruột đã là face-alignment (SFD+FAN) nhưng tên vẫn "FaceMesh" → gây h
 
 - **Load-balancing (Switch Transformer, Fedus 2021):** `L_bal = λ_bal · N · Σ_{i=1}^{N=3} f_i · P_i` — `f_i` = tỷ lệ chunk route vào mode _i_, `P_i` = router-prob trung bình của mode _i_. Minimize → 3 mode dùng ~đều → **chặn global mode-collapse THẬT**. `λ_bal ~ 1e-2` qua config.
 - **Vì sao KHÔNG per-chunk entropy** (proposal Eq.490): entropy per-chunk không tách được "hard routing" và "no-collapse" → không ngăn router luôn chọn 1 mode across batch.
-- Optional aux: `quality_loss_weight` (có sẵn [phase2_mqot.yaml](../configs/phase2_mqot.yaml)).
+- Optional aux: `quality_loss_weight` (có sẵn [phase2.yaml](../configs/phase2.yaml)).
 
 ### B.6. TDD (viết test trước)
 

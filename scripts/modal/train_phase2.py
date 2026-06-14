@@ -19,7 +19,8 @@ volume = get_volume()
     image=ML_TRAIN_IMAGE,
     volumes={"/mnt": volume},
     gpu="A10G",
-    timeout=7200
+    timeout=7200,
+    secrets=[modal.Secret.from_name("wandb")],  # WANDB_API_KEY (create: modal secret create wandb WANDB_API_KEY=...)
 )
 def train_remote(config_path: str = None):
     # THIN Modal wrapper: set up container paths, then call the pure training logic
@@ -28,9 +29,9 @@ def train_remote(config_path: str = None):
     from src.utils.config_utils import load_config
     from src.training.run import run_training
 
-    # Load config (inheritance). use_mqot=True lives in phase2_mqot.yaml; pass --config-path
-    # /root/configs/phase2_frames_trial.yaml for the frame-shard smoke.
-    final_config_path = config_path if config_path else "/root/configs/phase2_mqot.yaml"
+    # Load config (inheritance). use_mqot=True lives in phase2.yaml; pass --config-path
+    # /root/configs/phase2_smoke.yaml for the frame-shard smoke.
+    final_config_path = config_path if config_path else "/root/configs/phase2.yaml"
     config = load_config(final_config_path)
     # run_training selects device (cuda on Modal GPU); the webdataset path needs no manifest.
     run_training(config)

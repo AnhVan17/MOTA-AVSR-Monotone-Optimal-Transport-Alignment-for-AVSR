@@ -6,6 +6,9 @@ defaults:
 model:
   use_backbones: true # frame shards yield raw frames [T,C,H,W] → ResNet runs at train time
 
+training:
+  resume: true # 20 epochs > one Modal container → relaunch auto-resumes latest checkpoint
+
 loss:
   ctc_weight: 0.5
   ce_weight: 0.5
@@ -18,4 +21,7 @@ data:
   shuffle_buffer: 2000
 
 logging:
+  use_wandb: true
+  wandb_name: "phase1-vi-sp2000"
+  wandb_id: "phase1-vi-sp2000" # fixed → multi-container resume continues ONE wandb run (not a new run each relaunch)
   checkpoint_dir: "/mnt/checkpoints/phase1"

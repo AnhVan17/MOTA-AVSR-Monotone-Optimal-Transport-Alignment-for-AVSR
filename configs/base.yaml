@@ -48,7 +48,9 @@ training:
   weight_decay: 0.01
   gradient_clip: 5.0
   use_amp: true
-  pretrained_path: null # Default: None
+  pretrained_path: null # weights-only warm-start (cross-phase P1→P2, strict=False)
+  resume: false # true → auto-resume latest epoch_*.pt in checkpoint_dir (full state: optim+sched+epoch)
+  resume_path: null # explicit checkpoint to resume from (overrides `resume` auto-discovery)
 
 augmentation:
   # Audio
@@ -63,4 +65,10 @@ augmentation:
 
 logging:
   use_wandb: false
+  wandb_project: "mota-avsr"
+  wandb_name: null
+  wandb_id: null # fixed id (set in phase1.yaml) → resume reconnects to the SAME run across containers
+  wandb_resume: allow
+  log_interval: 50 # wandb per-step logging cadence (in steps)
+  train_wer_interval: 500 # periodic CTC-greedy train WER (early in-epoch signal; 0=off)
   checkpoint_dir: "/mnt/checkpoints"

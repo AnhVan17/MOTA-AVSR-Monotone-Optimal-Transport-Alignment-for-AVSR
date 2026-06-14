@@ -1,6 +1,6 @@
-# Phase 2 Configuration (Inherits from phase1_base.yaml)
+# Phase 2 Configuration (Inherits from phase1.yaml) — adds MQOT optimal-transport alignment.
 defaults:
-  - phase1_base
+  - phase1
 
 model:
   use_mqot: true
