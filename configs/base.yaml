@@ -65,4 +65,10 @@ augmentation:
 
 logging:
   use_wandb: false
+  wandb_project: "mota-avsr"
+  wandb_name: null
+  wandb_id: null # fixed id (set in phase1.yaml) → resume reconnects to the SAME run across containers
+  wandb_resume: allow
+  log_interval: 50 # wandb per-step logging cadence (in steps)
+  train_wer_interval: 500 # periodic CTC-greedy train WER (early in-epoch signal; 0=off)
   checkpoint_dir: "/mnt/checkpoints"

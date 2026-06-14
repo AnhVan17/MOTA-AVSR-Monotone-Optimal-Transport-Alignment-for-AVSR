@@ -22,7 +22,8 @@ volume = get_volume()
     image=ML_TRAIN_IMAGE,
     volumes={"/mnt": volume},
     gpu="A10G",         # A10G is good balance
-    timeout=21600       # 6h — headroom for a full-data calibration epoch (was 2h, too tight)
+    timeout=21600,      # 6h — headroom for a full-data calibration epoch (was 2h, too tight)
+    secrets=[modal.Secret.from_name("wandb")],  # WANDB_API_KEY (create: modal secret create wandb WANDB_API_KEY=...)
 )
 def train_remote(manifest_path: str = None, config_path: str = None):
     sys.path.append("/root")

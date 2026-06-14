@@ -19,7 +19,8 @@ volume = get_volume()
     image=ML_TRAIN_IMAGE,
     volumes={"/mnt": volume},
     gpu="A10G",
-    timeout=7200
+    timeout=7200,
+    secrets=[modal.Secret.from_name("wandb")],  # WANDB_API_KEY (create: modal secret create wandb WANDB_API_KEY=...)
 )
 def train_remote(config_path: str = None):
     # THIN Modal wrapper: set up container paths, then call the pure training logic

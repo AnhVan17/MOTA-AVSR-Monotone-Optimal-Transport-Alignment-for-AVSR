@@ -21,4 +21,7 @@ data:
   shuffle_buffer: 2000
 
 logging:
+  use_wandb: true
+  wandb_name: "phase1-vi-sp2000"
+  wandb_id: "phase1-vi-sp2000" # fixed → multi-container resume continues ONE wandb run (not a new run each relaunch)
   checkpoint_dir: "/mnt/checkpoints/phase1"

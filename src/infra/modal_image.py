@@ -68,6 +68,7 @@ ML_TRAIN_IMAGE = (
         "opencv-python-headless",
         "webdataset==0.2.79",  # training reads frame WebDataset shards (src/data/shards.py)
         "sentencepiece==0.2.0",  # Vietnamese SentencePiece tokenizer (src/data/tokenizers/sentencepiece.py)
+        "wandb",  # experiment tracking (src/utils/wandb_logger.py); needs Modal Secret 'wandb' → WANDB_API_KEY
         # Re-pin numpy<2: this separate layer re-resolves deps and would otherwise
         # upgrade numpy to 2.x, breaking torch 2.1.2's ABI (compiled against numpy 1.x).
         "numpy<2",
