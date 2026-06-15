@@ -18,7 +18,9 @@ data:
   train_shards: "/mnt/vicocktail_features/vicocktail-avvn-train-*.tar"
   val_shards: "/mnt/vicocktail_features/vicocktail-avvn-test-000000-*.tar" # clean test (process test sets first)
   batch_size: 16
-  shuffle_buffer: 2000
+  num_workers: 4 # 2→4: more parallel frame decode — GPU was data-bound (59% util on A10G)
+  shuffle_buffer: 1000 # halved so RAM stays ~same with 2× workers (4×1000 ≈ 2×2000 buffered)
+  samples_per_epoch: 194073 # ViCocktail train clips (≈ sum of shard _meta.json) → progress-bar total
 
 logging:
   use_wandb: true

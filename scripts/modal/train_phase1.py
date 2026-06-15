@@ -22,7 +22,9 @@ volume = get_volume()
     image=ML_TRAIN_IMAGE,
     volumes={"/mnt": volume},
     gpu="A10G",         # A10G is good balance
-    timeout=21600,      # 6h — headroom for a full-data calibration epoch (was 2h, too tight)
+    cpu=8.0,            # dedicated cores for num_workers=4 frame decode (was data-bound @59% GPU util)
+    memory=40960,       # 40GB for per-worker shuffle buffers (num_workers × shuffle_buffer)
+    timeout=86400,      # 24h (Modal max) — fits ~14 epochs/container → far fewer manual relaunches
     secrets=[modal.Secret.from_name("wandb")],  # WANDB_API_KEY (create: modal secret create wandb WANDB_API_KEY=...)
 )
 def train_remote(manifest_path: str = None, config_path: str = None):

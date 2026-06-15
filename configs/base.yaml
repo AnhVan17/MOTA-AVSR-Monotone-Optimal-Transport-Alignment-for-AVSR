@@ -36,8 +36,11 @@ data:
 
   batch_size: 32
   num_workers: 2
+  prefetch_factor: 4 # batches prefetched per worker (smoother GPU feed; applied only when num_workers>0)
+  persistent_workers: true # keep dataloader workers alive across epochs (avoid respawn cost)
   use_precomputed_features: true
   max_samples: null
+  samples_per_epoch: null # approx clips/epoch → train progress-bar total (tqdm); null = bare "Nit" count
 
 training:
   seed: 42
