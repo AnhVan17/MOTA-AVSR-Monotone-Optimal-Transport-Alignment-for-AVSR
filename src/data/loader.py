@@ -139,13 +139,17 @@ def _build_webdataset_loader(config: Dict, data_cfg: Dict, tokenizer, mode: str)
         dataset = dataset.slice(int(max_samples))
 
     pad_id = getattr(tokenizer, "eot_token_id", 50257)
-    return DataLoader(
-        dataset,
+    loader_kwargs = dict(
         batch_size=data_cfg.get("batch_size", 32),
         num_workers=data_cfg.get("num_workers", 2),
         collate_fn=Collator(pad_id),
         pin_memory=torch.cuda.is_available(),
     )
+    # prefetch_factor / persistent_workers are only valid with worker processes (num_workers > 0)
+    if loader_kwargs["num_workers"] > 0:
+        loader_kwargs["prefetch_factor"] = data_cfg.get("prefetch_factor", 4)
+        loader_kwargs["persistent_workers"] = data_cfg.get("persistent_workers", True)
+    return DataLoader(dataset, **loader_kwargs)
 
 
 def _detect_dataset_type(manifest_path: str) -> str:

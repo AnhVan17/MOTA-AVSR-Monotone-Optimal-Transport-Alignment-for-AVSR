@@ -135,6 +135,10 @@ class Trainer:
         self.best_metric = float('inf')
         self.log_interval = config['logging'].get('log_interval', 50)  # wandb per-step cadence
         self.train_wer_interval = config['logging'].get('train_wer_interval', 500)  # periodic train WER (0=off)
+        # Progress-bar total: WebDataset is an IterableDataset (no __len__), so derive steps/epoch
+        # from the known clip count → tqdm shows "210/12129 [ETA]" instead of a bare "210it".
+        _spe = config['data'].get('samples_per_epoch')
+        self.train_steps = (_spe // config['data']['batch_size']) if _spe else None
 
         # Load Pretrained / Resume.
         # True resume (full state) takes precedence over pretrained (weights-only warm-start):
@@ -304,7 +308,7 @@ class Trainer:
         # 0.9.5 Fix: Ensure gradients are zeroed before loop starts
         self.optimizer.zero_grad()
         
-        pbar = tqdm(self.train_loader, desc=f"Train E{epoch}")
+        pbar = tqdm(self.train_loader, desc=f"Train E{epoch}", total=self.train_steps)
         grad_norm = 0.0  # Always defined for consistent tqdm postfix
         for batch_idx, batch in enumerate(pbar):
             if batch is None:   # cả batch hỏng (mọi sample lỗi load) → skip
