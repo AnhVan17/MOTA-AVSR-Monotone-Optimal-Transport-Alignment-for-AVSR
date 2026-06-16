@@ -269,13 +269,15 @@ class Trainer:
                     filename="best_model.pt"
                 )
             
-            # 5. Logging
+            # 5. Logging — expose plateau state so the LR-drop countdown is visible (num_bad/patience)
+            plateau = self.plateau_scheduler
             logger.info(
                 f"Epoch {epoch+1}/{num_epochs} | "
                 f"Train Loss: {train_metrics['loss']:.4f} | "
                 f"Val Loss: {val_metrics['loss']:.4f} | "
                 f"Val WER: {val_metrics.get('wer', 0):.2f}% | "
-                f"LR: {get_lr(self.optimizer):.2e}"
+                f"LR: {get_lr(self.optimizer):.2e} | "
+                f"Plateau: {plateau.num_bad_epochs}/{plateau.patience} (best {plateau.best:.2f})"
             )
 
             # WandB per-epoch
@@ -286,6 +288,8 @@ class Trainer:
                     "val/loss": val_metrics['loss'],
                     "val/wer": val_metrics.get('wer', 0),
                     "val/cer": val_metrics.get('cer', 0),
+                    "lr": get_lr(self.optimizer),
+                    "plateau/num_bad_epochs": plateau.num_bad_epochs,
                 }, step=self.step)
 
             # 6. Early Stopping

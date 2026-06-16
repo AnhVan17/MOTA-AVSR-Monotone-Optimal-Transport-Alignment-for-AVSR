@@ -7,7 +7,8 @@ model:
   use_backbones: true # frame shards yield raw frames [T,C,H,W] → ResNet runs at train time
 
 training:
-  resume: true # 20 epochs > one Modal container → relaunch auto-resumes latest checkpoint
+  num_epochs: 30 # 20→30: chưa hội tụ ở E15 (val WER ~14.5%, plateau mới chớm) → cho cú LR-drop kịp mở pha hậu-cut
+  resume: true # nhiều epoch > một Modal container → relaunch auto-resume checkpoint mới nhất
 
 loss:
   ctc_weight: 0.5
