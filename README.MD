@@ -169,9 +169,6 @@ evaluation condition.
 └── verification/           # Local visual verification artifacts
 ```
 
-The `thesis/` directory is intentionally ignored in Git on this branch. Keep thesis drafts and
-temporary LaTeX builds out of code commits unless you deliberately decide otherwise.
-
 ## Setup
 
 The Modal workflow is the source of truth for full training. Local setup is mainly for tests,
