@@ -52,6 +52,7 @@ Thumbs.db
 # untrack folders
 docs/
 notebooks/
+thesis/
 
 # Assistant Generated Docs & Logs
 BUGFIX_CUDA_ASSERT.md
