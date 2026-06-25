@@ -76,23 +76,26 @@ class ConformerBlock(nn.Module):
         # 5. Final LayerNorm
         self.final_norm = nn.LayerNorm(d_model)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, pad_mask: torch.Tensor = None) -> torch.Tensor:
         """
         Args:
             x: [B, T, D]
+            pad_mask: [B, T] bool, True = padding (bỏ khỏi self-attn + conv). None → không mask.
         Returns:
             x: [B, T, D]
         """
         # FFN 1
         x = x + self.ffn_scale * self.ffn1(x)
 
-        # Multi-head attention
+        # Multi-head attention (mask padding keys → frame thật không bị pha loãng bởi padding)
         x_norm = self.norm_mha(x)
-        attn_out, _ = self.mha(x_norm, x_norm, x_norm)
+        attn_out, _ = self.mha(x_norm, x_norm, x_norm, key_padding_mask=pad_mask)
         x = x + self.mha_scale * self.dropout_mha(attn_out)
 
-        # Convolution
+        # Convolution — zero padding TRƯỚC depthwise conv để frame biên không tích chập với padding.
         x_norm = self.norm_conv(x)
+        if pad_mask is not None:
+            x_norm = x_norm.masked_fill(pad_mask.unsqueeze(-1), 0.0)
         x_conv = x_norm.transpose(1, 2)  # [B, D, T]
         x_conv = self.conv(x_conv)
         x = x + self.conv_scale * x_conv.transpose(1, 2)

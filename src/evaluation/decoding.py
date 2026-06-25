@@ -1,28 +1,44 @@
-import torch
+import math
 from typing import List
+
+import torch
+
+_NEG_INF = float('-inf')
+
+
+def _logaddexp(a: float, b: float) -> float:
+    """log(exp(a)+exp(b)) on Python floats — avoids per-scalar torch.tensor()/.item()
+    (each .item() forced a GPU<->CPU sync, which made beam search ~100x slower)."""
+    if a == _NEG_INF:
+        return b
+    if b == _NEG_INF:
+        return a
+    m = a if a > b else b
+    return m + math.log(math.exp(a - m) + math.exp(b - m))
+
 
 class CTCDecoder:
     """
     Handles CTC Decoding strategies (Greedy, and Beam Search).
     """
-    
+
     def __init__(self, tokenizer, blank_id: int = 50257):
         self.tokenizer = tokenizer
         self.blank_id = blank_id
-        
+
     def greedy_decode(self, logits: torch.Tensor) -> List[str]:
         """
         Greedy decode logits to text.
-        
+
         Args:
             logits: [B, T, V]
-            
+
         Returns:
             List of decoded strings
         """
         pred_ids = logits.argmax(dim=-1)
         decoded_texts = []
-        
+
         for seq in pred_ids:
             unique_tokens = []
             prev = None
@@ -31,141 +47,105 @@ class CTCDecoder:
                 if token_id != prev:
                     unique_tokens.append(token_id)
                     prev = token_id
-            
+
             # Filter blank
             unique_tokens = [t for t in unique_tokens if t != self.blank_id]
-            
+
             # Convert to string
             if len(unique_tokens) > 0:
                 text = self.tokenizer.decode(unique_tokens, skip_special_tokens=True)
             else:
                 text = ""
             decoded_texts.append(text.strip())
-            
+
         return decoded_texts
 
     def beam_search_decode(self, logits: torch.Tensor, beam_width: int = 10) -> List[str]:
         """
-        Pure Python CTC Beam Search.
-        
+        Pure-Python CTC prefix beam search (top-K pruned per frame).
+
+        Optimised: log-probs are moved to CPU once and ALL per-beam arithmetic uses Python
+        floats via `_logaddexp` (math). The previous version created a torch tensor and called
+        `.item()` for every scalar log-add — each `.item()` is a GPU<->CPU sync, which made this
+        ~100x slower (≈100 s/batch). Algorithm/output are unchanged.
+
         Args:
-            logits: [B, T, V] - Log probabilities (will apply log_softmax if not already)
-            beam_width: Number of beams to keep
-            
-        Returns:
-            List of decoded strings
+            logits: [B, T, V] — raw logits (log_softmax applied here)
+            beam_width: number of beams to keep (also the per-frame top-K)
         """
-        # Ensure log probs
-        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-        B, T, V = log_probs.shape
-        
+        log_probs = torch.nn.functional.log_softmax(logits, dim=-1).cpu()
+        B, T, _ = log_probs.shape
+
         decoded_texts = []
-        
         for b in range(B):
-            # Per-sample decoding matches
-            # Initialize: (prefix_tuple) -> (prob_blank, prob_non_blank)
-            beam = {(): (0.0, -float('inf'))} 
-            
+            lp = log_probs[b]
+            beam = {(): (0.0, _NEG_INF)}  # prefix -> (p_blank, p_non_blank)
+
             for t in range(T):
+                row = lp[t]
+                p_blank_curr = row[self.blank_id].item()
+                top_v, top_i = row.topk(beam_width)
+                top_v = top_v.tolist()
+                top_i = top_i.tolist()
+
                 next_beam = {}
-                
-                # Pruning: Only consider top K tokens at this step
-                curr_log_probs = log_probs[b, t]
-                top_v, top_i = curr_log_probs.topk(beam_width) 
-                
-                p_blank_curr = curr_log_probs[self.blank_id].item()
-                
                 for prefix, (p_b, p_nb) in beam.items():
-                    # Total prob of this prefix
-                    p = torch.logaddexp(torch.tensor(p_b), torch.tensor(p_nb)).item()
-                    
-                    if p < -200: # Prune very low probability paths
+                    p = _logaddexp(p_b, p_nb)
+                    if p < -200:  # prune very low-probability paths
                         continue
-                        
-                    # 1. Extend with Blank
-                    n_p_b_score = p + p_blank_curr
-                    
+
+                    # 1. extend with blank (prefix unchanged)
+                    n_blank = p + p_blank_curr
                     if prefix in next_beam:
                         s_b, s_nb = next_beam[prefix]
-                        n_s_b = torch.logaddexp(torch.tensor(s_b), torch.tensor(n_p_b_score)).item()
-                        next_beam[prefix] = (n_s_b, s_nb)
+                        next_beam[prefix] = (_logaddexp(s_b, n_blank), s_nb)
                     else:
-                        next_beam[prefix] = (n_p_b_score, -float('inf'))
-                        
-                    # 2. Extend with Non-Blank
-                    for s, token_id_tensor in zip(top_v, top_i):
-                        token_id = token_id_tensor.item()
-                        token_score = s.item()
-                        
+                        next_beam[prefix] = (n_blank, _NEG_INF)
+
+                    # 2. extend with non-blank (top-K tokens)
+                    for token_score, token_id in zip(top_v, top_i):
                         if token_id == self.blank_id:
                             continue
-                            
                         new_prefix = prefix + (token_id,)
-                        
-                        if len(prefix) > 0 and prefix[-1] == token_id:
-                            # 2a. Repeat character collapsed (Merge into same prefix)
-                            # Only from p_nb (since p_b + repeat = new char)
+
+                        if prefix and prefix[-1] == token_id:
+                            # 2a. repeat collapsed into same prefix (from p_nb)
                             p_repeat = p_nb + token_score
                             if prefix in next_beam:
                                 s_b, s_nb = next_beam[prefix]
-                                n_s_nb = torch.logaddexp(torch.tensor(s_nb), torch.tensor(p_repeat)).item()
-                                next_beam[prefix] = (s_b, n_s_nb)
+                                next_beam[prefix] = (s_b, _logaddexp(s_nb, p_repeat))
                             else:
-                                next_beam[prefix] = (-float('inf'), p_repeat)
-                            
-                            # 2b. Repeat character new (Transition from blank)
-                            # From p_b
+                                next_beam[prefix] = (_NEG_INF, p_repeat)
+                            # 2b. repeat as a NEW char (only via blank, from p_b)
                             p_new = p_b + token_score
                             if new_prefix in next_beam:
                                 s_b, s_nb = next_beam[new_prefix]
-                                n_s_nb = torch.logaddexp(torch.tensor(s_nb), torch.tensor(p_new)).item()
-                                next_beam[new_prefix] = (s_b, n_s_nb)
+                                next_beam[new_prefix] = (s_b, _logaddexp(s_nb, p_new))
                             else:
-                                next_beam[new_prefix] = (-float('inf'), p_new)
-                        
+                                next_beam[new_prefix] = (_NEG_INF, p_new)
                         else:
-                            # 2c. New character (extends prefix)
-                            # From both p_b and p_nb
+                            # 2c. new char (extends prefix, from both p_b and p_nb)
                             p_new = p + token_score
                             if new_prefix in next_beam:
                                 s_b, s_nb = next_beam[new_prefix]
-                                n_s_nb = torch.logaddexp(torch.tensor(s_nb), torch.tensor(p_new)).item()
-                                next_beam[new_prefix] = (s_b, n_s_nb)
+                                next_beam[new_prefix] = (s_b, _logaddexp(s_nb, p_new))
                             else:
-                                next_beam[new_prefix] = (-float('inf'), p_new)
+                                next_beam[new_prefix] = (_NEG_INF, p_new)
 
-                # Check if next_beam is empty (all pruned)
                 if not next_beam:
                     break
-
-                # Keep top K
-                # Score = logaddexp(p_b, p_nb)
-                sorted_beam = sorted(
-                    next_beam.items(),
-                    key=lambda x: torch.logaddexp(torch.tensor(x[1][0]), torch.tensor(x[1][1])).item(),
-                    reverse=True
+                beam = dict(
+                    sorted(next_beam.items(), key=lambda x: _logaddexp(x[1][0], x[1][1]), reverse=True)[:beam_width]
                 )
-                beam = dict(sorted_beam[:beam_width])
 
-            # Safety fallback if beam is somehow empty (shouldn't happen with break logic above)
             if not beam:
-                beam = {(): (0.0, -float('inf'))}
-            
-            # Finalize best
-            best_prefix = max(
-                beam.items(),
-                key=lambda x: torch.logaddexp(torch.tensor(x[1][0]), torch.tensor(x[1][1])).item()
-            )[0]
-            
-            # Decode to string
-            if len(best_prefix) > 0:
-                text = self.tokenizer.decode(list(best_prefix), skip_special_tokens=True)
-            else:
-                text = ""
+                beam = {(): (0.0, _NEG_INF)}
+            best_prefix = max(beam.items(), key=lambda x: _logaddexp(x[1][0], x[1][1]))[0]
+            text = self.tokenizer.decode(list(best_prefix), skip_special_tokens=True) if best_prefix else ""
             decoded_texts.append(text.strip())
-            
+
         return decoded_texts
-        
+
     def decode_targets(self, targets: torch.Tensor) -> List[str]:
         """
         Decode target tensor to text, filtering out padding tokens.

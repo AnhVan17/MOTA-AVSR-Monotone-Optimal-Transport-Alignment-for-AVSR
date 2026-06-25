@@ -73,7 +73,8 @@ class HybridDecoder(nn.Module):
     def forward(
         self,
         encoder_out: torch.Tensor,
-        target: Optional[torch.Tensor] = None
+        target: Optional[torch.Tensor] = None,
+        memory_key_padding_mask: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
@@ -106,7 +107,8 @@ class HybridDecoder(nn.Module):
             ar_out = self.decoder(
                 tgt=target_embed,
                 memory=encoder_out,
-                tgt_mask=causal_mask
+                tgt_mask=causal_mask,
+                memory_key_padding_mask=memory_key_padding_mask  # chặn token cross-attend frame audio padding
             )
             ar_logits = self.ar_head(ar_out)  # [B, L, V]
 

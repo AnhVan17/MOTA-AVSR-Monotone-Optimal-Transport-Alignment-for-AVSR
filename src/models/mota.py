@@ -8,23 +8,33 @@ Architecture:
 - Decoder: Hybrid CTC + Attention
 """
 
+import logging
+
 import torch
 import torch.nn as nn
 from typing import Dict, Optional
 
-# External Backbones (for E2E)
+# External visual backbone (legacy 2D path). Whisper is imported lazily only when the raw-audio
+# backbone is explicitly enabled; importing it at module load pulls transformers generation/sklearn,
+# which is unnecessary for the normal precomputed-feature path and brittle in lightweight test envs.
 try:
-    from transformers import WhisperModel
     from torchvision.models import resnet18, ResNet18_Weights
-except ImportError:
-    pass # Managed by use_backbones check
+except Exception:  # pragma: no cover - handled when the legacy visual backbone is requested
+    resnet18 = None
+    ResNet18_Weights = None
 
 # Import Modular Components
 from .layers.conformer import ConformerBlock
 from .layers.decoders import HybridDecoder
 from .layers.adapters import VisualAdapter
 from .fusion.quality_gate import QualityGate
+from .fusion.router_gate import RouterGatedFusion
 from .fusion.mqot import MQOTLayer, QualityEstimator, GuidedAttention
+from .visual.lipreading_frontend import LipReadingFrontend
+from src.utils.warn_once import warn_once
+
+logger = logging.getLogger(__name__)
+
 
 class MOTA(nn.Module):
     """
@@ -53,11 +63,15 @@ class MOTA(nn.Module):
         
         # Toggle Flags
         self.use_mqot = config.get('use_mqot', False)
+        self.use_rgf = config.get('use_rgf', False)  # Stage-1 = Router-Gated Fusion (Section B) vs QualityGate
+        self.use_visual_ctc_aux = config.get('use_visual_ctc_aux', False)
         # use_backbones → run the VISUAL ResNet on raw frames at train time (frame-shard pipeline).
         # use_audio_backbone → run Whisper on RAW audio; OFF by default since the shards already
         # store precomputed Whisper features (the model reads them directly).
         self.use_backbones = config.get('use_backbones', False)
         self.use_audio_backbone = config.get('use_audio_backbone', False)
+        # Visual frontend: 'resnet2d' (legacy ImageNet 2D) | 'lipreading_tcn' (Conv3D stem + 2D ResNet, pretrained)
+        self.visual_frontend = config.get('visual_frontend', 'resnet2d')
         
         # ============================================================
         # STAGE 0: OPTIONAL BACKBONES (raw → features at train time)
@@ -65,16 +79,29 @@ class MOTA(nn.Module):
         # Visual ResNet: needed when the dataset yields raw frames [B,T,C,H,W] (WebDataset frame
         # shards). Frozen by default (Section A); per-epoch frame augmentation is upstream in the loader.
         if self.use_backbones:
-            # visual_pretrained=False → no ImageNet download (offline tests / from-scratch ablation).
-            visual_weights = ResNet18_Weights.DEFAULT if config.get('visual_pretrained', True) else None
-            resnet = resnet18(weights=visual_weights)
-            # Strip FC + AvgPool → spatial feature map; pooled per-frame in forward_backbones.
-            self.visual_backbone = nn.Sequential(*list(resnet.children())[:-2])
-            self.visual_backbone.requires_grad_(False)  # frozen; Section C: gate on train_visual_backbone
+            if self.visual_frontend == 'lipreading_tcn':
+                # Pretrained lip-reading encoder (Conv3D stem + 2D ResNet) → 512-D/frame. Motion-aware,
+                # frozen by default; trainer may gradual-unfreeze its last block. Replaces the useless
+                # 2D-per-frame ImageNet backbone (carried no lip motion → visual contributed ~0).
+                self.visual_backbone = LipReadingFrontend(
+                    weights=config.get('visual_frontend_weights'),
+                    relu_type=config.get('visual_frontend_relu', 'prelu'),
+                )
+            else:
+                # Legacy 2D ResNet18. visual_pretrained=False → no ImageNet download (offline/from-scratch).
+                if resnet18 is None or ResNet18_Weights is None:
+                    raise ImportError("torchvision ResNet18 is required for visual_frontend='resnet2d'")
+                visual_weights = ResNet18_Weights.DEFAULT if config.get('visual_pretrained', True) else None
+                resnet = resnet18(weights=visual_weights)
+                # Strip FC + AvgPool → spatial feature map; pooled per-frame in forward_backbones.
+                self.visual_backbone = nn.Sequential(*list(resnet.children())[:-2])
+                self.visual_backbone.requires_grad_(False)  # frozen
 
         # Audio Whisper backbone: ONLY for true raw-audio E2E. Off by default — the shards store
         # precomputed Whisper features, so loading Whisper here otherwise = dead weight.
         if self.use_audio_backbone:
+            from transformers import WhisperModel
+
             self.whisper = WhisperModel.from_pretrained("openai/whisper-small")
             self.whisper.encoder.requires_grad_(False)
             
@@ -84,6 +111,27 @@ class MOTA(nn.Module):
         self.audio_proj = nn.Linear(self.audio_dim, d_model)
         self.visual_proj = nn.Linear(self.visual_dim, d_model)
         self.quality_gate = QualityGate(d_model)
+
+        # Visual bootstrap head: direct CTC supervision on the visual timeline before fusion.
+        # It is opt-in and ignored by normal inference unless the trainer/verify script reads it.
+        if self.use_visual_ctc_aux:
+            self.visual_ctc_norm = nn.LayerNorm(d_model)
+            self.visual_ctc_head = nn.Linear(d_model, vocab_size)
+
+        # RGF (Section B): hard routing over {audio-only, visual-only, fusion}. Reuses the
+        # QualityGate above as the 'fusion' expert so a Phase-2 warm-start keeps its weights.
+        if self.use_rgf:
+            rgf_cfg = config.get('rgf', {})
+            self.rgf = RouterGatedFusion(
+                d_model,
+                chunk_size=rgf_cfg.get('chunk_size', 15),
+                tau0=rgf_cfg.get('tau0', 2.0),
+                tau_min=rgf_cfg.get('tau_min', 0.5),
+                gamma=rgf_cfg.get('gamma', 0.99995),
+                num_heads=num_heads,
+                dropout=dropout,
+                quality_gate=self.quality_gate,
+            )
         
         # ============================================================
         # STAGE 2: FINE-GRAINED ALIGNMENT (M-QOT - Refinement)
@@ -152,42 +200,32 @@ class MOTA(nn.Module):
             torch.nn.init.normal_(module.weight, mean=0, std=0.02)
     
     def forward_backbones(self, audio, visual):
-        """Helper to run backbones if inputs are raw"""
-        B = visual.shape[0]
-        
-        # Visual: [B, T, C, H, W] -> [B, T, D]
-        if self.use_backbones and visual.ndim == 5:
-            T, C, H, W = visual.shape[1], visual.shape[2], visual.shape[3], visual.shape[4]
-            
-            # Flatten time: [B*T, C, H, W]
-            visual_flat = visual.view(B * T, C, H, W)
-            
-            # Forward ResNet. Frozen for Section A; for Section C E2E this no_grad must become
-            # conditional on a train_visual_backbone flag. TODO(Section C).
-            with torch.no_grad():
-                # self.visual_backbone outputs [B*T, 512, H', W']
-                feat_map = self.visual_backbone(visual_flat)
-                
-                # Global Average Pool -> [B*T, 512, 1, 1]
-                # Note: We need to define pooling if not in backbone.
-                # In __init__, we stripped last 2 layers (AvgPool, FC).
-                # So we apply AdaptiveAvgPool here.
-                feat = torch.nn.functional.adaptive_avg_pool2d(feat_map, (1, 1))
-                feat = feat.flatten(1) # [B*T, 512]
-            
-            # Reshape back: [B, T, 512]
-            visual = feat.view(B, T, -1)
+        """Run the visual backbone if inputs are raw frames [B,T,C,H,W] -> features [B,T,D].
 
-        # Audio: datasets/shards already yield precomputed Whisper features [B, T_a, 768], so we
-        # pass through. (If use_audio_backbone is ever wired for raw waveforms, run self.whisper here.)
-        
+        Audio is already precomputed Whisper features [B,T_a,768] (passed through).
+        """
+        if self.use_backbones and visual.ndim == 5:
+            if self.visual_frontend == 'lipreading_tcn':
+                # Lip-reading frontend does grayscale+normalize and manages its own grad (frozen
+                # stem; last block optionally trainable). Takes [B,T,C,H,W] -> [B,T,512] directly.
+                visual = self.visual_backbone(visual)
+            else:
+                # Legacy 2D path: flatten time, run frozen ResNet18 per frame, global-avg-pool.
+                B, T, C, H, W = visual.shape
+                visual_flat = visual.view(B * T, C, H, W)
+                with torch.no_grad():
+                    feat_map = self.visual_backbone(visual_flat)              # [B*T,512,H',W']
+                    feat = torch.nn.functional.adaptive_avg_pool2d(feat_map, (1, 1)).flatten(1)
+                visual = feat.view(B, T, -1)
         return audio, visual
 
     def forward(
         self,
         audio: torch.Tensor,
         visual: torch.Tensor,
-        target: Optional[torch.Tensor] = None
+        target: Optional[torch.Tensor] = None,
+        audio_mask: Optional[torch.Tensor] = None,
+        visual_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass
@@ -202,13 +240,27 @@ class MOTA(nn.Module):
         # Handles Raw Video [B, T, C, H, W] -> Features [B, T, D]
         audio, visual = self.forward_backbones(audio, visual)
 
+        # Padding mask (F3): True = padding. None → attention KHÔNG mask padding (cảnh báo 1 lần).
+        if audio_mask is None:
+            warn_once(logger, "mota_no_audio_mask",
+                      "audio_mask=None → self/cross-attention KHÔNG mask padding (frame thật bị "
+                      "pha loãng; trainer nên truyền audio_mask/visual_mask).")
+        pad_mask = (~audio_mask) if audio_mask is not None else None  # [B, Ta], True = pad
+
         # ========================================
         # STAGE 1: Coarse Fusion (QualityGate)
         # ========================================
         audio_feat = self.audio_proj(audio)     # [B, Ta, D]
         visual_feat = self.visual_proj(visual)  # [B, Tv, D]
+        visual_ctc_logits = None
+        if self.use_visual_ctc_aux:
+            visual_ctc_logits = self.visual_ctc_head(self.visual_ctc_norm(visual_feat))
         
-        gate_out = self.quality_gate(audio_feat, visual_feat)
+        # Stage-1 fusion: RGF hard-routing (Section B) if enabled, else QualityGate soft fusion.
+        gate_out = (
+            self.rgf(audio_feat, visual_feat) if self.use_rgf
+            else self.quality_gate(audio_feat, visual_feat, audio_mask, visual_mask)
+        )
         fused_coarse = gate_out['fused']        # [B, Ta, D]
         
         # ========================================
@@ -216,6 +268,10 @@ class MOTA(nn.Module):
         # ========================================
         transport_map = None
         if self.use_mqot:
+            if audio_mask is not None:
+                warn_once(logger, "mqot_no_mask",
+                          "MQOT chưa mask padding (Sinkhorn Ta×Tv) → defer run-2; transport có thể "
+                          "lệch do padding.")
             # 1. Prepare rich features
             # Critical Fix (0.8.2): Use audio_feat (clean) instead of fused_coarse (leakage)
             # Refinement (0.9.5): Use raw 'audio' input (768) instead of projected 'audio_feat' (256)
@@ -244,12 +300,12 @@ class MOTA(nn.Module):
         # ========================================
         encoded = fused
         for layer in self.encoder:
-            encoded = layer(encoded)
+            encoded = layer(encoded, pad_mask=pad_mask)
             
         # ========================================
         # STAGE 4: Hybrid Decoding
         # ========================================
-        decoder_out = self.decoder(encoded, target)
+        decoder_out = self.decoder(encoded, target, memory_key_padding_mask=pad_mask)
         
         outputs = {
             'ctc_logits': decoder_out['ctc_logits'],
@@ -258,6 +314,12 @@ class MOTA(nn.Module):
             'q_audio': gate_out['q_audio'],
             'q_visual': gate_out['q_visual']
         }
+
+        if visual_ctc_logits is not None:
+            outputs['visual_ctc_logits'] = visual_ctc_logits
+
+        if self.use_rgf and 'router_probs' in gate_out:
+            outputs['router_probs'] = gate_out['router_probs']  # [B, n, 3] for load-balancing loss
         
         if transport_map is not None:
             outputs['transport_map'] = transport_map

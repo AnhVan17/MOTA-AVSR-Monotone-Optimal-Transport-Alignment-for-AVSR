@@ -15,9 +15,18 @@ model:
 
   # Flags
   use_mqot: false # Default: Disabled
+  use_rgf: false # Section B: Router-Gated Fusion as Stage-1 (replaces QualityGate). Off → P1/P2 unchanged.
   use_backbones: false # Visual ResNet on raw frames; set true for WebDataset frame shards
   use_audio_backbone: false # Whisper on RAW audio; off — shards store precomputed Whisper feats
   visual_pretrained: true # ResNet18 ImageNet weights; false = from-scratch / offline tests
+
+# Section B — Router-Gated Fusion (only used when model.use_rgf=true)
+rgf:
+  chunk_size: 15 # frames per routing chunk (also NRQE consistency window)
+  tau0: 2.0 # Gumbel-Softmax temperature start (soft routing → gradient reaches all 3 experts)
+  tau_min: 0.5 # temperature floor (near one-hot late in training)
+  gamma: 0.99995 # per-step anneal: tau(t)=max(tau_min, tau0·gamma^t)
+  lambda_bal: 0.01 # load-balancing loss weight (Switch Transformer) → prevents mode-collapse
 
 tokenizer:
   type: sentencepiece # 'sentencepiece' (Vietnamese ~2000) | 'whisper' (51865, GRID/legacy)

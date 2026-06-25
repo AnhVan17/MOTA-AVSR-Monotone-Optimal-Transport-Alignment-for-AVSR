@@ -25,7 +25,9 @@ def save_checkpoint(
     step: int,
     best_metric: float,
     checkpoint_dir: str,
-    filename: str = "checkpoint.pt"
+    filename: str = "checkpoint.pt",
+    warmup_scheduler: Any = None,
+    scaler: Any = None,
 ):
     """Save training checkpoint"""
     checkpoint_dir = Path(checkpoint_dir)
@@ -37,6 +39,8 @@ def save_checkpoint(
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+        'warmup_scheduler_state_dict': warmup_scheduler.state_dict() if warmup_scheduler else None,
+        'scaler_state_dict': scaler.state_dict() if scaler else None,
         'best_metric': best_metric
     }
     
@@ -60,6 +64,8 @@ def load_checkpoint(
     optimizer: torch.optim.Optimizer = None,
     scheduler: Any = None,
     device: torch.device = None,
+    warmup_scheduler: Any = None,
+    scaler: Any = None,
 ) -> Dict[str, Any]:
     """
     Load training checkpoint with device auto-detection.
@@ -86,6 +92,13 @@ def load_checkpoint(
 
     if scheduler and 'scheduler_state_dict' in checkpoint and checkpoint['scheduler_state_dict']:
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+    if (warmup_scheduler and 'warmup_scheduler_state_dict' in checkpoint
+            and checkpoint['warmup_scheduler_state_dict']):
+        warmup_scheduler.load_state_dict(checkpoint['warmup_scheduler_state_dict'])
+
+    if scaler and 'scaler_state_dict' in checkpoint and checkpoint['scaler_state_dict']:
+        scaler.load_state_dict(checkpoint['scaler_state_dict'])
 
     logger.info(f"Checkpoint loaded: {checkpoint_path} (device={device})")
     logger.info(f"  Epoch: {checkpoint['epoch']}, Step: {checkpoint['step']}")

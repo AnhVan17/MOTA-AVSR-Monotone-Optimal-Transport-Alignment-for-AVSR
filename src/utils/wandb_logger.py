@@ -58,13 +58,26 @@ class WandbLogger:
             settings=wandb.Settings(_disable_stats=True),
         )
         self._step = 0
+        # Decouple wandb's internal monotonic step from our global_step. On resume our step
+        # rewinds (we replay the interrupted epoch), which otherwise makes wandb DROP every
+        # replayed log as "step out of order". Logging global_step as a custom step metric —
+        # and NOT passing step= to wandb.log — lets the x-axis go backwards without warnings.
+        self.run.define_metric("global_step")
+        self.run.define_metric("*", step_metric="global_step")
 
     def log(self, metrics: Dict[str, Any], step: Optional[int] = None):
         """Log scalar metrics."""
         if not self.enabled:
             return
         self._step = step if step is not None else self._step + 1
-        self._wandb.log(metrics, step=self._step)
+        self._log(metrics, self._step)
+
+    def _log(self, data: Dict[str, Any], step: Optional[int]):
+        """Send to wandb using global_step as the x-axis metric. We do NOT pass step= so
+        wandb's internal step stays monotonic (no 'out of order' drops on resume/replay)."""
+        if step is not None:
+            data = {**data, "global_step": step}
+        self._wandb.log(data)
 
     def log_mqot_diagnostics(
         self,
@@ -99,7 +112,7 @@ class WandbLogger:
             "mqot/quality_min": float(np.min(quality_scores)),
             "mqot/quality_max": float(np.max(quality_scores)),
         }
-        self._wandb.log(diagnostics, step=step)
+        self._log(diagnostics, step)
 
         # Alignment heatmap (first sample)
         if transport_map.shape[0] > 0:
@@ -107,7 +120,7 @@ class WandbLogger:
                 transport_map[0],
                 caption="Transport Plan (sample 0)"
             )
-            self._wandb.log({"mqot/transport_heatmap": heatmap}, step=step)
+            self._log({"mqot/transport_heatmap": heatmap}, step)
 
     def log_alignment_map(
         self,
@@ -123,7 +136,7 @@ class WandbLogger:
                 alignment_weights[0].astype(np.float32),
                 caption=caption
             )
-            self._wandb.log({"quality/alignment_map": img}, step=step)
+            self._log({"quality/alignment_map": img}, step)
 
     def finish(self):
         """Close WandB run."""

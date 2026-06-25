@@ -13,14 +13,23 @@ import io
 import json
 import os
 import re
+import zlib
 from typing import Dict, Iterable, List, Optional, Union
 
 import torch
 import webdataset as wds
 
 from src.utils.logging_utils import setup_logger
+from src.utils.warn_once import warn_once
 
 logger = setup_logger(__name__)
+
+
+def _drop_handler(exn: Exception) -> bool:
+    """WebDataset error handler: báo (1 lần/worker) khi BỎ 1 sample hỏng rồi tiếp tục (thay cho
+    warn_and_continue im lặng) → fallback mất dữ liệu vẫn thấy được trong log."""
+    warn_once(logger, "wds_drop", f"WebDataset bỏ sample hỏng: {exn!r} (im các lần sau trong worker này).")
+    return True
 
 
 def _pattern_to_glob(pattern: str) -> str:
@@ -102,6 +111,7 @@ def build_webdataset(
     augment: bool = False,
     aug_cfg: Optional[Dict] = None,
     shuffle_buffer: int = 1000,
+    deterministic: bool = False,
 ):
     """Build a streaming ``IterableDataset`` over feature shards.
 
@@ -114,6 +124,9 @@ def build_webdataset(
         train: if True, shuffle shards + sample buffer; if False, deterministic order.
         augment / aug_cfg: optional on-the-fly feature augmentation (train only).
         shuffle_buffer: reservoir size for sample-level shuffle (train only).
+        deterministic: if True, seed each sample's augmentation by a stable hash of its key so
+            the noise is FROZEN across epochs/runs (fixed noisy dev for reproducible selection).
+            Used for val/dev when ``augment`` is on; train leaves this False (fresh noise/epoch).
     """
     augmenter = None
     if augment:
@@ -130,7 +143,9 @@ def build_webdataset(
         frames = torch.load(io.BytesIO(sample["video.pth"]))
         visual = frames.permute(0, 3, 1, 2).float() / 255.0
         if augmenter is not None:
-            audio, visual = augmenter(audio, visual)
+            # deterministic dev → seed per-sample by key (CRC32, stable across runs); train → None (random).
+            seed = zlib.crc32(str(sample["__key__"]).encode()) if deterministic else None
+            audio, visual = augmenter(audio, visual, seed=seed)
         target = torch.tensor(tokenizer.encode(text), dtype=torch.long)
         return {
             "audio": audio,
@@ -140,17 +155,24 @@ def build_webdataset(
             "rel_path": sample["__key__"],
         }
 
-    # webdataset expands brace patterns ("{000..099}") but NOT shell globs ("*"); a "*" pattern
-    # would be passed through as a literal (missing) filename → silently 0 samples. Expand it here
-    # and fail loud on no match (never silently train on an empty stream).
+    # webdataset expands brace patterns ("{000..099}") but NOT shell globs ("*"); a "*" would be
+    # passed through as a literal (missing) filename → silently 0 samples. Expand here and fail loud
+    # (never silently train on an empty stream). `shards` may be a single glob string OR a list of
+    # glob/literal paths (e.g. a train set split across non-contiguous batches + a held-out dev glob).
     if isinstance(shards, str) and "*" in shards:
-        import glob
         matched = sorted(glob.glob(shards))
         if not matched:
             raise FileNotFoundError(f"No shards matched glob pattern: {shards}")
         shards = matched
+    elif isinstance(shards, (list, tuple)):
+        matched = []
+        for s in shards:
+            matched += sorted(glob.glob(s)) if isinstance(s, str) and "*" in s else [s]
+        if not matched:
+            raise FileNotFoundError(f"No shards matched any pattern in: {shards}")
+        shards = matched
 
-    ds = wds.WebDataset(shards, shardshuffle=train, handler=wds.warn_and_continue)
+    ds = wds.WebDataset(shards, shardshuffle=train, handler=_drop_handler)
     if train and shuffle_buffer > 0:
         ds = ds.shuffle(shuffle_buffer)
     return ds.map(decode)
