@@ -18,16 +18,20 @@ MANIFEST_PATH = "/mnt/vicocktail_features/avvn-test_snr_0_interferer_1-000000_ma
 app = modal.App(APP_NAME)
 volume = get_volume()
 
+
 @app.function(
     image=ML_TRAIN_IMAGE,
     volumes={"/mnt": volume},
-    gpu="A10G",         # A10G is good balance
-    cpu=8.0,            # dedicated cores for num_workers=4 frame decode (was data-bound @59% GPU util)
-    memory=40960,       # 40GB for per-worker shuffle buffers (num_workers × shuffle_buffer)
+    gpu=["L40S", "A100", "A10G"],  # prefer faster/larger GPUs, fall back to the old A10G pool
+    cpu=8.0,            # dedicated cores for num_workers=4 frame decode
+    memory=65536,       # 64GB headroom for raw-frame batches + DataLoader prefetch queues
     timeout=86400,      # 24h (Modal max) — fits ~14 epochs/container → far fewer manual relaunches
-    secrets=[modal.Secret.from_name("wandb")],  # WANDB_API_KEY (create: modal secret create wandb WANDB_API_KEY=...)
+    # Secret 'wandb' gắn VÔ ĐIỀU KIỆN → deterministic (local==remote, tránh lệch dependency gây
+    # crash-loop). Secret PHẢI tồn tại trong env (modal secret create wandb WANDB_API_KEY=...).
+    # use_wandb trong config điều khiển việc thực sự dùng wandb hay không.
+    secrets=[modal.Secret.from_name("wandb")],
 )
-def train_remote(manifest_path: str = None, config_path: str = None):
+def train_remote(manifest_path: str = None, config_path: str = None, max_epochs_per_run: int = None):
     sys.path.append("/root")
     from src.training.run import run_training
     from src.utils.logging_utils import setup_logger
@@ -43,6 +47,11 @@ def train_remote(manifest_path: str = None, config_path: str = None):
 
     # Load config first so we can detect the data format.
     config = load_config(final_config_path)
+
+    # Cap số epoch cho LẦN CHẠY này (treo --detach từng chặng → tự dừng sạch; relaunch resume tiếp).
+    if max_epochs_per_run is not None:
+        config.setdefault("training", {})["max_epochs_per_run"] = int(max_epochs_per_run)
+        logger.info(f"max_epochs_per_run={max_epochs_per_run} (dừng sau {max_epochs_per_run} epoch lần này)")
 
     # WebDataset (frame shards): no jsonl manifest — data.train_shards/val_shards drive the loader.
     if str(config.get("data", {}).get("format", "")).lower() == "webdataset":
@@ -91,5 +100,17 @@ def train_remote(manifest_path: str = None, config_path: str = None):
     
 
 @app.local_entrypoint()
-def main(manifest_path: str = None, config_path: str = None):
-    train_remote.remote(manifest_path=manifest_path, config_path=config_path)
+def main(manifest_path: str = None, config_path: str = None, max_epochs_per_run: int = None,
+         spawn: bool = False):
+    # spawn=True → .spawn() (fire-and-forget): KHÔNG bị Modal huỷ khi client local ngắt → dùng cho
+    #   BACKGROUND. PHẢI kèm `modal run --detach ... --spawn` (không --detach thì app ephemeral chết
+    #   khi entrypoint return → hàm spawn bị giết). .remote() (mặc định) là BLOCKING + stream log,
+    #   nhưng bị huỷ khi client ngắt kể cả --detach → chỉ hợp foreground/smoke.
+    kwargs = dict(manifest_path=manifest_path, config_path=config_path,
+                  max_epochs_per_run=max_epochs_per_run)
+    if spawn:
+        call = train_remote.spawn(**kwargs)
+        print(f"Spawned train_remote (detach-safe). FunctionCall id: {call.object_id}")
+        print("Theo dõi: `modal app logs <app-id>` hoặc WandB run theo config (xem `modal app list`).")
+    else:
+        train_remote.remote(**kwargs)

@@ -18,8 +18,10 @@ volume = get_volume()
 @app.function(
     image=ML_TRAIN_IMAGE,
     volumes={"/mnt": volume},
-    gpu="A10G",
-    timeout=7200,
+    gpu="L40S",         # 48GB — đủ RAM cho batch 32 + MQOT (không OOM như A10G 24GB), rẻ hơn A100
+    cpu=16.0,           # nhiều core cho frame decode song song (pipeline raw-frame data-bound)
+    memory=65536,       # 64GB: shuffle buffers (num_workers × buffer) + batch lớn + MQOT
+    timeout=86400,      # 24h (Modal max) — Phase-2 + MQOT nặng hơn; ít phải relaunch
     secrets=[modal.Secret.from_name("wandb")],  # WANDB_API_KEY (create: modal secret create wandb WANDB_API_KEY=...)
 )
 def train_remote(config_path: str = None):

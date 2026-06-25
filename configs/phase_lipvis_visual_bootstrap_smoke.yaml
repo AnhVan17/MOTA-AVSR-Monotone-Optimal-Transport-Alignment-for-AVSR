@@ -1,0 +1,22 @@
+# Tiny Modal smoke for the visual-bootstrap mechanism (not real training).
+# Exercises: warm-start from force checkpoint, newly added visual CTC head, visual CTC loss,
+# auxiliary visual/audio forwards, immediate visual unfreeze, and checkpoint save.
+defaults:
+  - phase_lipvis_visual_bootstrap
+
+data:
+  batch_size: 16
+  max_samples: 32
+  samples_per_epoch: 64
+  num_workers: 2
+
+training:
+  num_epochs: 1
+  warmup_steps: 2
+  accum_steps: 2
+  resume: false
+
+logging:
+  use_wandb: false
+  checkpoint_dir: /mnt/checkpoints/lipvis_visual_bootstrap_smoke
+  wandb_id: lipvis-visual-bootstrap-smoke

@@ -1,0 +1,35 @@
+# Phase-1 NOISE PROBE — noise-aware training of QualityGate (use_mqot=false), warm-started from
+# clean-P1. Tests the "noise-in-P1" curriculum hypothesis: giving the reliability gate noise
+# exposure during its FORMATIVE phase should create robustness that the brief P2 fine-tune did NOT
+# (eval phase2/epoch_2 ≈ clean-P1 on all 9 conditions). Decouples the noise schedule from the MQOT
+# schedule. Diagnostic only — verdict = eval on the 9 test conditions (watch SNR-5 vs clean-P1 ~65%).
+defaults:
+  - phase1
+
+model:
+  use_mqot: false # QualityGate-only (same arch as clean-P1); we add ONLY noise here, NOT MQOT.
+
+training:
+  # Warm-start clean-P1 (= the clean warmup of the curriculum), FRESH optimizer at P1 lr (1e-4,
+  # inherited) — higher than P2's 8e-5 so QualityGate actually moves off the clean optimum.
+  pretrained_path: "/mnt/checkpoints/phase1/best_model.pt"
+  resume: false # weights-only warm-start (NOT full-state resume) — trainer.py:150 path.
+  num_epochs: 6 # probe: enough to see if SNR-5 TRENDS down; eval intermediate epochs, stop early if flat.
+
+# Noise-aug — SAME recipe as Phase-2 so the probe is comparable. Whisper feats precomputed → noise
+# is a feature-space proxy (watch: if real-SNR test doesn't improve, bottleneck may be proxy-vs-real).
+augmentation:
+  prob: 0.5
+  noise_std: 0.1
+  time_mask_param: 10
+  freq_mask_param: 64
+  modality_dropout_prob: 0.25 # WATCH dropout-induced modality bias: if clean-AV WER >> 13.7%, lower to ~0.1 and re-probe.
+  visual_prob: 0.3
+
+data:
+  val_augment: true # monitor on degraded val (still clean-test here — probe only; the verdict is the 9-cond eval).
+
+logging:
+  wandb_name: "phase1-noise-probe"
+  wandb_id: "phase1-noise-probe" # distinct wandb run (not clean-P1's)
+  checkpoint_dir: "/mnt/checkpoints/phase1_noise" # SEPARATE dir — must NOT overwrite the clean-P1 baseline.

@@ -1,0 +1,36 @@
+# Tiny Modal smoke for the force-visual mechanism (not real training).
+# Exercises: visual-only auxiliary forward, immediate visual unfreeze, optimizer param group, and
+# checkpoint save on the same warm-start path as the real force run.
+defaults:
+  - phase_lipvis_smoke
+
+data:
+  batch_size: 16
+  max_samples: 32
+  samples_per_epoch: 64 # max_samples is applied per worker in the WebDataset path; tqdm total ~= 4
+  num_workers: 2
+
+augmentation:
+  modality_dropout_prob: 0.0
+
+training:
+  num_epochs: 1
+  warmup_steps: 2
+  accum_steps: 2
+  pretrained_path: /mnt/checkpoints/lipvis/epoch_15.pt
+  resume: false
+  learning_rate: 5.0e-5
+  visual_backbone_lr: 3.0e-6
+  visual_unfreeze_at_start: true
+  freeze_quality_gate_for_visual_force: false
+  visual_only_loss_weight: 0.3
+  visual_only_warmup_epochs: 3
+  visual_only_start_epoch: 0
+  audio_only_loss_weight: 0.1
+  audio_only_warmup_epochs: 1
+  audio_only_start_epoch: 0
+
+logging:
+  use_wandb: false
+  checkpoint_dir: /mnt/checkpoints/lipvis_force_visual_smoke
+  wandb_id: lipvis-force-visual-smoke

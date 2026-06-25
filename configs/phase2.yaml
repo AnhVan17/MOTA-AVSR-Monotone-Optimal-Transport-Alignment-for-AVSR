@@ -17,11 +17,25 @@ loss:
   quality_loss_weight: 0.1
 
 data:
-  batch_size: 12 # Reduced for OT memory + raw frames (heavier than precomputed features)
+  batch_size: 32 # A100 40GB: bump 12→32 (MQOT transport-map memory vẫn fit; thử 48 nếu CHƯA OOM)
+  num_workers: 8 # 4→8: nhiều worker decode frame song song (khớp cpu=16 trên A100 instance)
+  val_augment: true # áp noise-aug lên val (clean test-000000) → best_model chọn theo robustness, KHÔNG leak test_snr
+
+# Noise-aug (noise-robust training) — CHỈ Phase-2; Phase-1 giữ clean audio.
+augmentation:
+  prob: 0.5 # bật audio aug: Gaussian noise + SpecAugment cho ~50% sample (base đang 0.0)
+  noise_std: 0.1 # nhiễu Gaussian lên Whisper feature (proxy; tune theo log)
+  time_mask_param: 10 # SpecAugment time mask
+  freq_mask_param: 64 # SpecAugment freq/channel mask
+  modality_dropout_prob: 0.25 # bỏ HẲN 1 luồng 25% sample → ép dùng luồng còn lại (AV-HuBERT style)
+  visual_prob: 0.3 # giữ aug hình (flip + frame mask)
 
 training:
-  learning_rate: 5e-5 # Fine-tuning LR
+  learning_rate: 8e-5 # sqrt-scaled cho batch 32; resume GIỮ 8e-5 (optimizer state đè config)
+  num_epochs: 15 # fine-tune warm-start không cần 30 (P1 đã 30); early-stop patience 10 vẫn lo nếu chững sớm
   pretrained_path: "/mnt/checkpoints/phase1/best_model.pt"
 
 logging:
+  wandb_name: "phase2-vi-mqot"
+  wandb_id: "phase2-vi-mqot" # distinct từ phase1 → run wandb RIÊNG (không đè run Phase-1)
   checkpoint_dir: "/mnt/checkpoints/phase2"

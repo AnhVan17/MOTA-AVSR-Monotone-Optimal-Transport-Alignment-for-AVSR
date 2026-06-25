@@ -1,0 +1,14 @@
+# Resume smoke for force-visual: load the real force checkpoint but write to a throwaway dir.
+# This catches LR-scheduler resume bugs without touching /mnt/checkpoints/lipvis_force_visual.
+defaults:
+  - phase_lipvis_force_smoke
+
+training:
+  num_epochs: 2
+  resume_path: /mnt/checkpoints/lipvis_force_visual/epoch_0.pt
+  resume: false
+
+logging:
+  use_wandb: false
+  checkpoint_dir: /mnt/checkpoints/lipvis_force_visual_resume_smoke
+  wandb_id: lipvis-force-visual-resume-smoke

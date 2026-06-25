@@ -1,0 +1,49 @@
+# Phase 1 (lipvis) — visual frontend = pretrained lip-reading encoder (Conv3D stem + 2D ResNet),
+# COLD-START (KHÔNG warm-start clean-P1), noise-aug từ epoch 0, frozen → gradual-unfreeze layer4.
+# Lip frontend pretrained + frozen; chỉ layer4 tune nhẹ ở stage sau. clean-P1 GIỮ làm baseline.
+defaults:
+  - phase1
+
+model:
+  visual_frontend: lipreading_tcn
+  visual_frontend_weights: /mnt/pretrained/lrw_resnet18_frontend.pth
+  visual_frontend_relu: swish # verified A7: LRW resnet18 config relu_type=swish (no activation params)
+  use_mqot: false # cô lập đóng góp visual; MQOT là run-2 (gated)
+
+loss:
+  label_smoothing: 0.1 # F2: chuẩn ASR Transformer; giảm overconfident, lợi khi train có nhiễu
+
+data:
+  # Dev TÁCH TỪ TRAIN (rigor: selection KHÔNG chạm test). batch 096-098 = held-out dev (~5.9k);
+  # train = batch 000000-000095. build_webdataset nhận list glob → ghép 2 dải cho train.
+  train_shards:
+    - /mnt/vicocktail_features/vicocktail-avvn-train-0000[0-8][0-9]-*.tar # batch 000-089
+    - /mnt/vicocktail_features/vicocktail-avvn-train-00009[0-5]-*.tar # batch 090-095
+  val_shards: /mnt/vicocktail_features/vicocktail-avvn-train-00009[6-8]-*.tar # batch 096-098 (dev)
+  val_augment: true # noise-aug + deterministic seed lên dev → chọn best theo robustness
+  samples_per_epoch: 188000 # ~194073 trừ ~5.9k dev (chỉ ảnh hưởng thanh tiến độ tqdm)
+  batch_size: 32 # giữ batch 32; nếu còn OOM thì hạ 16 là nấc kế tiếp
+  num_workers: 4 # raw-frame batches rất nặng; 8 workers × prefetch sâu từng gây Modal exit 137
+  prefetch_factor: 2 # 4×2=8 batch prefetched (thay vì 8×6=48) để giữ RAM ổn định
+  persistent_workers: false # release worker queues between epochs/runs; ưu tiên ổn định hơn respawn speed
+
+augmentation: # noise-robust (giống phase2)
+  prob: 0.5
+  noise_std: 0.1
+  time_mask_param: 10
+  freq_mask_param: 64
+  modality_dropout_prob: 0.25
+  visual_prob: 0.3
+
+training:
+  # COLD-START: KHÔNG set pretrained_path (null kế thừa base). resume:true kế thừa phase1
+  # (lần đầu dir lipvis rỗng → cold start; relaunch → auto-resume epoch của chính nó).
+  num_epochs: 30 # cold-start cần hội tụ lại ASR tiếng Việt
+  visual_backbone_lr: 1.0e-5 # lr thấp cho layer4 khi unfreeze
+  visual_unfreeze_epoch: 20 # fallback (head cold-start hội tụ trễ); cũng làm resume-safe
+  visual_unfreeze_patience: 3 # mở khi val-WER chững 3 epoch liên tiếp
+
+logging:
+  checkpoint_dir: /mnt/checkpoints/lipvis # TÁCH, KHÔNG đè clean-P1
+  wandb_name: lipvis-cold-v1
+  wandb_id: lipvis-cold-v1
