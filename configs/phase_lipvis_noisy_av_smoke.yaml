@@ -1,0 +1,20 @@
+# Tiny smoke for the noisy-AV continuation. Not a real metric run.
+defaults:
+  - phase_lipvis_noisy_av
+
+data:
+  batch_size: 16
+  max_samples: 32
+  samples_per_epoch: 64
+  num_workers: 2
+
+training:
+  num_epochs: 1
+  warmup_steps: 2
+  accum_steps: 2
+  resume: false
+
+logging:
+  use_wandb: false
+  checkpoint_dir: /mnt/checkpoints/lipvis_noisy_av_smoke
+  wandb_id: lipvis-noisy-av-smoke

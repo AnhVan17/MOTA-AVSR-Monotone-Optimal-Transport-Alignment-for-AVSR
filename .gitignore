@@ -52,6 +52,7 @@ Thumbs.db
 # untrack folders
 docs/
 notebooks/
+thesis/
 
 # Assistant Generated Docs & Logs
 BUGFIX_CUDA_ASSERT.md
@@ -71,3 +72,18 @@ tmp_diag.py
 verification/**/*.tar
 verification/**/*.png
 verification/**/*_meta.json
+
+# LaTeX build artifacts (keep thesis/*.tex + thesis/refs.bib tracked)
+*.aux
+*.lof
+*.lot
+*.toc
+*.out
+*.bbl
+*.blg
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bcf
+*.run.xml
+thesis/main.pdf

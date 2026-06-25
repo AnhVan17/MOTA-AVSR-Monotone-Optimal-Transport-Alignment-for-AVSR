@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict
+from typing import Dict, Optional
 
 
 class QualityGate(nn.Module):
@@ -13,6 +13,9 @@ class QualityGate(nn.Module):
     - Cross-attention: audio frame tự quyết attend visual frame nào → LEARNED alignment
     - ReLU → GELU + LayerNorm: stable gradient flow
     - Residual gate zero-init: stable ở epoch đầu
+
+    Padding-aware (F3): khi truyền audio_mask/visual_mask, cross-attention chỉ attend visual frame
+    THẬT, causal mask tính theo ĐỘ DÀI THẬT (không phải chiều đã pad), và quality score pool có mask.
 
     Forward:
       1. Cross-attention alignment (visual → audio timeline)
@@ -73,25 +76,39 @@ class QualityGate(nn.Module):
         self.residual_gate = nn.Parameter(torch.logit(torch.tensor(0.1)))
 
     def _create_causal_mask(self, Ta: int, Tv: int, device: torch.device) -> torch.Tensor:
-        """
-        Audio frame i chỉ attend visual frames <= proportional time.
-        Đảm bảo monotonic alignment: audio frame 0 → visual frame 0.
-        """
+        """Fallback (KHÔNG có độ dài thật): causal theo chiều đã pad. [Ta, Tv]."""
         mask = torch.zeros(Ta, Tv, device=device)
         for i in range(Ta):
             max_j = int((i / Ta) * Tv) + 1
             mask[i, max_j:] = float('-inf')
         return mask
 
+    def _align_mask(
+        self, Ta: int, Tv: int, audio_len: torch.Tensor, visual_len: torch.Tensor,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Additive mask [B, Ta, Tv]: monotonic causal theo ĐỘ DÀI THẬT + bỏ visual padding.
+
+        audio frame i (trong la frame thật) chỉ attend visual frame j <= (i/la)*lv, và j < lv.
+        Không phụ thuộc lượng padding → đầu ra tại frame thật bất biến với padding.
+        """
+        i = torch.arange(Ta, device=device).view(1, Ta, 1).float()
+        j = torch.arange(Tv, device=device).view(1, 1, Tv)
+        la = audio_len.view(-1, 1, 1).clamp(min=1).float()
+        lv = visual_len.view(-1, 1, 1).clamp(min=1)
+        max_j = (i / la) * lv.float() + 1.0
+        allow = (j.float() < max_j) & (j < lv)            # [B, Ta, Tv] causal + visual-valid
+        add = torch.zeros(allow.shape, device=device)
+        return add.masked_fill(~allow, float('-inf'))
+
     def _cross_attention_align(
         self,
         audio_feat: torch.Tensor,
-        visual_feat: torch.Tensor
+        visual_feat: torch.Tensor,
+        audio_len: Optional[torch.Tensor] = None,
+        visual_len: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """
-        Learnable alignment: audio query attends visual key/value.
-        Output shape: [B, Ta, D] — visual aligned to audio timeline.
-        """
+        """Learnable alignment: audio query attends visual key/value → [B, Ta, D]."""
         B, Ta, D = audio_feat.shape
         Tv = visual_feat.shape[1]
 
@@ -99,61 +116,57 @@ class QualityGate(nn.Module):
         K = self.k_proj(visual_feat)
         V = self.v_proj(visual_feat)
 
-        # Multi-head: [B, H, Ta, hd]
         H = self.num_heads
         hd = D // H
         Q = Q.view(B, Ta, H, hd).transpose(1, 2)
         K = K.view(B, Tv, H, hd).transpose(1, 2)
         V = V.view(B, Tv, H, hd).transpose(1, 2)
 
-        # Attention scores
-        scores = torch.matmul(Q, K.transpose(-2, -1)) * self.attn_scale
+        scores = torch.matmul(Q, K.transpose(-2, -1)) * self.attn_scale  # [B, H, Ta, Tv]
 
-        # Causal mask: audio i chỉ attend visual frames <= i*Tv/Ta
         if Ta > 1 and Tv > 1:
-            causal_mask = self._create_causal_mask(Ta, Tv, audio_feat.device)
-            # Broadcast: [Ta, Tv] → [B, H, Ta, Tv]
-            causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(B, H, -1, -1)
-            scores = scores + causal_mask
+            if audio_len is not None and visual_len is not None:
+                add_mask = self._align_mask(Ta, Tv, audio_len, visual_len, audio_feat.device)  # [B,Ta,Tv]
+            else:
+                add_mask = self._create_causal_mask(Ta, Tv, audio_feat.device).unsqueeze(0)     # [1,Ta,Tv]
+            scores = scores + add_mask.unsqueeze(1)  # broadcast over heads → [B,H,Ta,Tv]
 
         attn_weights = F.softmax(scores, dim=-1)
         attn_weights = self.attn_dropout(attn_weights)
 
-        # Aggregate: [B, H, Ta, hd] → [B, Ta, D]
         context = torch.matmul(attn_weights, V)
         context = context.transpose(1, 2).reshape(B, Ta, D)
-
         return context
 
     def forward(
         self,
         audio_feat: torch.Tensor,
         visual_feat: torch.Tensor,
+        audio_mask: Optional[torch.Tensor] = None,
+        visual_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Args:
             audio_feat: [B, T_a, D] — audio features sau projection
             visual_feat: [B, T_v, D] — visual features sau projection
+            audio_mask: [B, T_a] bool, True = frame thật (None → không mask, fallback v1)
+            visual_mask: [B, T_v] bool, True = frame thật
 
         Returns:
-            dict:
-              fused [B, T_a, D]: audio-visual fusion
-              gate_weights [B, T_a, 2]: audio vs visual weight per frame
-              q_audio [B]: audio quality score (pooled)
-              q_visual [B]: visual quality score (pooled)
-              alignment_weights [B, T_a, T_v]: cross-attention alignment map
+            dict: fused [B,Ta,D], aligned_visual [B,Ta,D], gate_weights [B,Ta,2],
+                  q_audio [B], q_visual [B], alignment_weights [B,Ta,Tv] or None
         """
         B, Ta, D = audio_feat.shape
         Tv = visual_feat.shape[1]
+        audio_len = audio_mask.sum(1) if audio_mask is not None else None
+        visual_len = visual_mask.sum(1) if visual_mask is not None else None
 
         # --- Bước 1: Alignment ---
-        # Fast path: T_a == T_v → skip attention overhead
         if Ta == Tv:
             aligned_visual = visual_feat
             alignment_weights = None
         else:
-            aligned_visual = self._cross_attention_align(audio_feat, visual_feat)
-            # Store alignment weights for visualization/debugging
+            aligned_visual = self._cross_attention_align(audio_feat, visual_feat, audio_len, visual_len)
             Q = F.normalize(self.q_proj(audio_feat), p=2, dim=-1)
             K = F.normalize(self.k_proj(visual_feat), p=2, dim=-1)
             sim = torch.matmul(Q, K.transpose(1, 2))  # [B, Ta, Tv]
@@ -164,28 +177,32 @@ class QualityGate(nn.Module):
         q_visual = self.visual_quality(aligned_visual)    # [B, T_a, 1]
 
         # --- Bước 3: Gated fusion ---
-        combined = torch.cat([
-            audio_feat,
-            aligned_visual,
-            q_audio,
-            q_visual
-        ], dim=-1)                                        # [B, T_a, 2D + 2]
-
+        combined = torch.cat([audio_feat, aligned_visual, q_audio, q_visual], dim=-1)  # [B, T_a, 2D+2]
         gate_weights = self.gate(combined)                # [B, T_a, 2]
         fused = (
             gate_weights[..., 0:1] * audio_feat +
             gate_weights[..., 1:2] * aligned_visual
         )
 
-        # --- Bước 4: Residual gate — convex combination giữa audio thuần và fused ---
-        # g≈0.1 lúc đầu → giữ chủ yếu audio; model học tăng g để tin fusion nhiều hơn.
+        # --- Bước 4: Residual gate ---
         g = torch.sigmoid(self.residual_gate)
         fused = (1.0 - g) * audio_feat + g * fused
 
+        # --- Pooled quality (masked theo audio timeline; bỏ frame padding) ---
+        if audio_mask is not None:
+            am = audio_mask.float()
+            denom = am.sum(1).clamp(min=1)
+            q_audio_p = (q_audio.squeeze(-1) * am).sum(1) / denom
+            q_visual_p = (q_visual.squeeze(-1) * am).sum(1) / denom
+        else:
+            q_audio_p = q_audio.mean(dim=1).squeeze(-1)
+            q_visual_p = q_visual.mean(dim=1).squeeze(-1)
+
         return {
             'fused': fused,                               # [B, T_a, D]
+            'aligned_visual': aligned_visual,             # [B, T_a, D]
             'gate_weights': gate_weights,                 # [B, T_a, 2]
-            'q_audio': q_audio.mean(dim=1).squeeze(-1),  # [B]
-            'q_visual': q_visual.mean(dim=1).squeeze(-1),# [B]
+            'q_audio': q_audio_p,                          # [B]
+            'q_visual': q_visual_p,                        # [B]
             'alignment_weights': alignment_weights,       # [B, T_a, T_v] or None
         }

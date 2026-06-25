@@ -71,3 +71,17 @@ def test_feature_mode_still_works():
     out = model(audio, visual)
     assert out["ctc_logits"].shape == (B, Ta, VOCAB)
     assert out["ar_logits"] is None               # no target → no AR logits
+
+
+def test_visual_ctc_aux_uses_visual_timeline():
+    """Bootstrap head should emit logits on Tv, independent from the audio encoder length."""
+    torch.manual_seed(0)
+    model = create_model(_cfg(use_backbones=False, use_visual_ctc_aux=True))
+
+    B, Ta, Tv = 2, 12, 7
+    audio = torch.randn(B, Ta, 768)
+    visual = torch.randn(B, Tv, 512)
+    out = model(audio, visual)
+
+    assert out["ctc_logits"].shape == (B, Ta, VOCAB)
+    assert out["visual_ctc_logits"].shape == (B, Tv, VOCAB)

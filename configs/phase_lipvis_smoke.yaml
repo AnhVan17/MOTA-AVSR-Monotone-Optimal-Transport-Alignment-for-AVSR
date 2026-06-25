@@ -1,0 +1,22 @@
+# SMOKE test for phase_lipvis (NOT real training): tiny stream, 2 epochs, forces gradual-unfreeze
+# at epoch 1 so the unfrozen-layer4 forward+backward path is exercised. Verifies the full Modal
+# training path: list-glob train split, dev split, cold-start init, frozen lip frontend load (swish),
+# param-groups, train/val loop, unfreeze hook, checkpoint save. Expect garbage WER (random model).
+defaults:
+  - phase_lipvis
+
+data:
+  max_samples: 64 # slice the stream → ~4 steps/epoch
+  num_workers: 2
+
+training:
+  num_epochs: 2
+  warmup_steps: 2
+  visual_unfreeze_epoch: 1 # unfreeze after epoch 0 → epoch 1 trains layer4
+  visual_unfreeze_patience: 0
+  resume: false
+
+logging:
+  use_wandb: false
+  checkpoint_dir: /mnt/checkpoints/lipvis_smoke # scoped throwaway (clean up after)
+  wandb_id: lipvis-smoke

@@ -26,7 +26,10 @@ class FeatureAugmenter:
         self.visual_dropout = visual_conf.get('dropout_prob', 0.05)
         self.visual_mask_frames = visual_conf.get('frame_mask_param', 5)
         self.visual_prob = visual_conf.get('prob', 0.5)
-        
+        # Modality dropout: with this prob, zero ONE entire stream (never both) → force the model
+        # to use the other. Key technique for AV noise-robustness (AV-HuBERT / u-HuBERT).
+        self.modality_dropout_prob = audio_conf.get('modality_dropout_prob', 0.0)
+
     def augment_audio(self, features: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -114,7 +117,42 @@ class FeatureAugmenter:
                 out[t0:t0 + t] = 0
         return out
 
-    def __call__(self, audio: torch.Tensor, visual: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def apply_modality_dropout(self, audio: torch.Tensor, visual: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """With prob `modality_dropout_prob`, zero ONE entire stream (never both) so the model must
+        rely on the other — this teaches the reliability-aware fusion to lean on the visual stream
+        when audio is corrupted/absent (the core of AV noise-robustness)."""
+        if self.modality_dropout_prob > 0 and torch.rand(1).item() < self.modality_dropout_prob:
+            if torch.rand(1).item() < 0.5:
+                audio = torch.zeros_like(audio)
+            else:
+                visual = torch.zeros_like(visual)
+        return audio, visual
+
+    def _apply(self, audio: torch.Tensor, visual: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # visual is either raw frames [T,C,H,W] (4D) or precomputed features [T,D] (2D).
         aug_visual = self.augment_frames(visual) if visual.ndim == 4 else self.augment_visual(visual)
-        return self.augment_audio(audio), aug_visual
+        return self.apply_modality_dropout(self.augment_audio(audio), aug_visual)
+
+    def __call__(
+        self, audio: torch.Tensor, visual: torch.Tensor, seed: int = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Augment one sample.
+
+        seed=None → use the global RNG (train: fresh random noise every epoch — correct).
+        seed given → DETERMINISTIC: the same sample always gets the SAME noise across epochs/runs.
+        Used to build a FIXED noisy dev set for reproducible model selection (robust-AVSR standard).
+        We seed the RNG to `seed`, apply, then RESTORE the prior global RNG state so train-time
+        randomness and any other consumer are left untouched (no global side-effect).
+        """
+        if seed is None:
+            return self._apply(audio, visual)
+
+        torch_state = torch.random.get_rng_state()
+        np_state = np.random.get_state()
+        try:
+            torch.manual_seed(seed)
+            np.random.seed(seed % (2 ** 32))
+            return self._apply(audio, visual)
+        finally:
+            torch.random.set_rng_state(torch_state)
+            np.random.set_state(np_state)

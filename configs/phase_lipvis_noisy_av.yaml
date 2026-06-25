@@ -1,0 +1,53 @@
+# Noisy-AV continuation after visual bootstrap.
+#
+# Goal: stop forcing pure visual-only decoding and instead make visual help under degraded audio.
+# This is closer to the thesis target: AVSR robustness, where lips complement noisy speech rather
+# than replacing audio entirely.
+defaults:
+  - phase_lipvis_visual_bootstrap
+
+augmentation:
+  # Stronger audio corruption than bootstrap, but no full modality dropout. We want the main AV loss
+  # to keep an audio timeline while making the visual stream useful when audio is ambiguous.
+  prob: 0.7
+  noise_std: 0.2
+  time_mask_param: 35
+  freq_mask_param: 128
+  modality_dropout_prob: 0.0
+  visual_prob: 0.3
+
+training:
+  pretrained_path: /mnt/checkpoints/lipvis_visual_bootstrap/best_model.pt
+  resume: true
+  num_epochs: 6
+  learning_rate: 1.0e-5
+  min_lr: 1.0e-6
+  warmup_steps: 500
+  accum_steps: 2
+
+  # Keep only the lip frontend's last block trainable, at a very small LR. Full visual unfreeze is
+  # too risky; freezing everything makes domain adaptation weak.
+  visual_backbone_lr: 5.0e-7
+  visual_unfreeze_at_start: true
+  freeze_quality_gate_for_visual_force: false
+
+  # Keep a light direct visual signal, but do not let it dominate the AV objective.
+  visual_ctc_loss_weight: 0.2
+  visual_ctc_warmup_epochs: 1
+  visual_ctc_start_epoch: 0
+
+  # Stop the too-hard pure visual-only decoder pressure. We measure visual-only, but do not train it
+  # as the primary target in this phase.
+  visual_only_loss_weight: 0.0
+  visual_only_warmup_epochs: 0
+  visual_only_start_epoch: 0
+
+  # Small audio anchor to prevent forgetting while the main AV path sees stronger noise.
+  audio_only_loss_weight: 0.05
+  audio_only_warmup_epochs: 1
+  audio_only_start_epoch: 0
+
+logging:
+  checkpoint_dir: /mnt/checkpoints/lipvis_noisy_av
+  wandb_name: lipvis-noisy-av-v1
+  wandb_id: lipvis-noisy-av-v1

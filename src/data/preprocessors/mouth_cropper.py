@@ -37,6 +37,7 @@ class MouthCropper:
     """
     _instance = None
     _fa = None
+    _warned_detect_fail = False  # log center-crop fallback đúng 1 lần (tránh flood preprocessing)
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
@@ -146,9 +147,11 @@ class MouthCropper:
                 x2 = min(w, cx + radius)
                 
                 return frame[y1:y2, x1:x2], (x1, y1, x2, y2)
-        except Exception:
-            pass
-            
+        except Exception as e:
+            if not MouthCropper._warned_detect_fail:
+                MouthCropper._warned_detect_fail = True
+                logger.warning(f"mouth detect lỗi → center-crop fallback (im các lần sau): {e}")
+
         # Fallback Center Crop
         cy, cx = h // 2, w // 2
         r = CropConfig.IMAGE_SIZE // 2

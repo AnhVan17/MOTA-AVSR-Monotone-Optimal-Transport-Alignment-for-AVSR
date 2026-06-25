@@ -128,9 +128,12 @@ def _build_webdataset_loader(config: Dict, data_cfg: Dict, tokenizer, mode: str)
         shards,
         tokenizer,
         train=is_train,
-        augment=is_train,
+        augment=is_train or data_cfg.get("val_augment", False),  # val_augment → noise-aug on val too (robustness-aware best_model)
         aug_cfg=config.get("augmentation", None),
         shuffle_buffer=data_cfg.get("shuffle_buffer", 1000),
+        # val/dev with augment → FROZEN per-sample noise (fixed noisy dev = reproducible selection);
+        # train stays random (fresh noise every epoch).
+        deterministic=(not is_train and data_cfg.get("val_augment", False)),
     )
 
     # Cheap smoke runs: cap the stream to N samples. Real training leaves this unset (unbounded).
