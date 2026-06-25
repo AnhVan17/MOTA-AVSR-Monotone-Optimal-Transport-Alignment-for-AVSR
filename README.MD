@@ -1,394 +1,408 @@
-# MOTA: Multi-modal Optimal Transport Alignment for AVSR
+<div align="center">
 
-An Audio-Visual Speech Recognition system with two-phase training:
+# MOTA AVSR
 
-- **Phase 1**: QualityGate for coarse fusion
-- **Phase 2**: MQOT for fine-grained alignment
+**Multimodal Optimal Transport Alignment for Vietnamese audio-visual speech recognition**
 
----
+[![Python](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.1%2B-ee4c2c.svg)](https://pytorch.org/)
+[![Modal](https://img.shields.io/badge/runtime-Modal-111111.svg)](https://modal.com/)
+[![W&B](https://img.shields.io/badge/logging-W%26B-ffbe00.svg)](https://wandb.ai/)
+[![Status](https://img.shields.io/badge/status-research%20prototype-orange.svg)](#project-status)
+
+</div>
+
+MOTA AVSR is a thesis-oriented research codebase for Vietnamese audio-visual speech recognition
+(AVSR). It studies how to combine Whisper-style audio features and mouth-region video frames under
+clean and noisy conditions, with a focus on reliability-aware fusion and optional optimal-transport
+alignment.
+
+The current system is built around two ideas:
+
+- **QualityGate v2**: coarse audio-visual fusion with reliability estimates and soft gating.
+- **MQOT**: optional fine-grained alignment using unbalanced Sinkhorn optimal transport.
+
+> [!IMPORTANT]
+> This is an experimental research repository, not a production ASR package. Reported numbers should
+> be tied to a checkpoint, config, and evaluation protocol. For thesis tables, use the full evaluator
+> in [`scripts/modal/eval_phase1.py`](scripts/modal/eval_phase1.py).
 
 ## Table of Contents
 
-1.  [Architecture](#1-architecture)
-2.  [Feature Extractors](#2-feature-extractors)
-3.  [Preprocessing](#3-preprocessing)
-4.  [Training](#4-training)
-5.  [Fusion](#5-fusion)
-6.  [Formulas](#6-formulas)
-7.  [Project Structure](#7-project-structure)
-8.  [Usage](#8-usage)
+- [Project Status](#project-status)
+- [Highlights](#highlights)
+- [At a Glance](#at-a-glance)
+- [Method Overview](#method-overview)
+- [Repository Layout](#repository-layout)
+- [Setup](#setup)
+- [Data](#data)
+- [Pretrained Visual Frontend](#pretrained-visual-frontend)
+- [Training](#training)
+- [Verification and Evaluation](#verification-and-evaluation)
+- [Local Tests](#local-tests)
+- [Modal Operations](#modal-operations)
+- [Known Caveats](#known-caveats)
+- [References and Related Projects](#references-and-related-projects)
 
----
+## Project Status
 
-## 1. Architecture
+| Area | Current state |
+|---|---|
+| Main runtime | Modal GPU functions and Modal volume storage. |
+| Data path | ViCocktail-style WebDataset shards with `audio.pth`, `video.pth`, and `txt`. |
+| Baseline path | QualityGate / lipvis training configs are available. |
+| Visual branch | Still being bootstrapped; visual-only decoding is a diagnostic, not the final objective. |
+| MQOT path | Implemented as Phase 2 continuation; useful only when visual features carry signal. |
+| Tests | Fast unit tests cover masking, CTC lengths, resume behavior, visual frontend, RGF, and WebDataset IO. |
 
-### 1.1 System Overview
+## Highlights
 
-```mermaid
-%%{init: {'theme': 'default', 'themeVariables': { 'fontSize': '14px'}, 'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart TB
-    V["&emsp;&emsp;Video Input&emsp;&emsp;"] --> CROP["&emsp;&emsp;Mouth Crop&emsp;&emsp;"]
-    V --> AUDIO["&emsp;&emsp;Audio Extract&emsp;&emsp;"]
-    CROP --> RES["&emsp;&emsp;ResNet18&emsp;&emsp;"]
-    AUDIO --> WHIS["&emsp;&emsp;Whisper Encoder&emsp;&emsp;"]
-    RES --> PT["&emsp;&emsp;.pt Feature File&emsp;&emsp;"]
-    WHIS --> PT
-    PT --> QG["&emsp;&emsp;QualityGate&emsp;&emsp;"]
-    QG --> MQ["&emsp;&emsp;MQOT Layer&emsp;&emsp;"]
-    MQ --> ENC["&emsp;&emsp;Conformer Encoder&emsp;&emsp;"]
-    ENC --> DEC["&emsp;&emsp;Hybrid Decoder&emsp;&emsp;"]
-    DEC --> OUT["&emsp;&emsp;Transcript Output&emsp;&emsp;"]
-```
+- Vietnamese AVSR pipeline using ViCocktail-style WebDataset frame shards.
+- Frozen Whisper audio features plus visual frame encoding.
+- Optional lip-reading visual frontend with Conv3D stem + ResNet trunk.
+- Quality-aware fusion, optional Router-Gated Fusion, and optional MQOT refinement.
+- Hybrid CTC + autoregressive decoder.
+- Robust training utilities: modality dropout, deterministic noisy dev, full-state resume,
+  AMP scaler restore, warmup restore, and W&B resume-safe logging.
+- Modal-first training, verification, evaluation, backup, and restore scripts.
+- Unit tests for masking, CTC lengths, resume behavior, visual frontend, RGF, and WebDataset IO.
 
-### 1.2 Data Flow
+## At a Glance
 
-| Stage       | Input    | Output    | Tool        |
-| ----------- | -------- | --------- | ----------- |
-| Crop        | Video    | Mouth ROI | MediaPipe   |
-| Audio       | Video    | Waveform  | FFmpeg      |
-| Audio Feat  | Waveform | T x 768   | Whisper     |
-| Visual Feat | Frames   | T x 512   | ResNet18    |
-| Fusion      | A + V    | T x 256   | QualityGate |
-| Decode      | Features | Logits    | Conformer   |
+| Item | Description |
+|---|---|
+| Task | Vietnamese AVSR under clean and noisy test conditions. |
+| Inputs | Precomputed audio features plus mouth-crop frame tensors. |
+| Fusion | QualityGate v2, optional Router-Gated Fusion, optional MQOT refinement. |
+| Decoder | Hybrid CTC + autoregressive decoder. |
+| Training style | Staged configs with checkpoint resume and Modal relaunches. |
+| Main commands | [`scripts/modal/train_phase1.py`](scripts/modal/train_phase1.py), [`scripts/modal/train_phase2.py`](scripts/modal/train_phase2.py), [`scripts/modal/eval_phase1.py`](scripts/modal/eval_phase1.py). |
 
----
-
-## 2. Feature Extractors
-
-### 2.1 Whisper (Audio)
-
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart LR
-    W1["&emsp;Waveform&emsp;"] --> W2["&emsp;Mel Spectrogram&emsp;"]
-    W2 --> W3["&emsp;Conv1D Layers&emsp;"]
-    W3 --> W4["&emsp;Transformer x12&emsp;"]
-    W4 --> W5["&emsp;Features 1500x768&emsp;"]
-```
-
-**Specs:**
-
-| Item   | Value         |
-| ------ | ------------- |
-| Model  | whisper-small |
-| Input  | 16kHz, 15s    |
-| Mel    | 80 x 3000     |
-| Output | 1500 x 768    |
-
-### 2.2 ResNet18 (Visual)
-
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart LR
-    R1["&emsp;Frame 88x88&emsp;"] --> R2["&emsp;Conv 7x7&emsp;"]
-    R2 --> R3["&emsp;MaxPool 3x3&emsp;"]
-    R3 --> R4["&emsp;ResBlocks x4&emsp;"]
-    R4 --> R5["&emsp;GlobalAvgPool&emsp;"]
-    R5 --> R6["&emsp;512-dim Output&emsp;"]
-```
-
-**Specs:**
-
-| Item   | Value       |
-| ------ | ----------- |
-| Model  | resnet18    |
-| Input  | 88 x 88 RGB |
-| Output | 512-dim     |
-
----
-
-## 3. Preprocessing
-
-### 3.1 Pipeline Stages
-
-**Stage 1: CROP**
-
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart LR
-    A1["&emsp;Read Frames&emsp;"] --> A2["&emsp;Detect Face&emsp;"]
-    A2 --> A3["&emsp;Crop Mouth&emsp;"]
-    A3 --> A4["&emsp;Save Video&emsp;"]
-```
-
-**Stage 2: EXTRACT**
-
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart LR
-    B1["&emsp;Extract Audio&emsp;"] --> B2["&emsp;Whisper Encode&emsp;"]
-    B3["&emsp;Load Frames&emsp;"] --> B4["&emsp;ResNet Encode&emsp;"]
-    B2 --> B5["&emsp;Combine Features&emsp;"]
-    B4 --> B5
-    B5 --> B6["&emsp;Save .pt File&emsp;"]
-```
-
-### 3.2 Mouth Detection
-
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 20, 'rankSpacing': 40}}}%%
-flowchart LR
-    M1["&emsp;BGR Frame&emsp;"] --> M2["&emsp;To RGB&emsp;"]
-    M2 --> M3["&emsp;FaceMesh&emsp;"]
-    M3 --> M4["&emsp;Landmarks&emsp;"]
-    M4 --> M5["&emsp;Calc Center&emsp;"]
-    M5 --> M6["&emsp;Crop ROI&emsp;"]
-    M6 --> M7["&emsp;88x88 Output&emsp;"]
-```
-
-**Landmark IDs:** 13, 14, 61, 291, 78, 308, 324, 17
-
-**Formulas:**
-
-```
-cx = mean(x_coords)
-cy = mean(y_coords)
-r = max(width, height) * 0.9
-```
-
-**Optimization:** Detect every 5 frames, reuse bbox.
-
-### 3.3 Audio Extraction
-
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart TB
-    V["&emsp;Video File&emsp;"] --> P1["&emsp;PyAV Method&emsp;"]
-    V --> P2["&emsp;FFmpeg Fallback&emsp;"]
-    P1 --> N["&emsp;RMS Normalize&emsp;"]
-    P2 --> N
-    N --> PAD["&emsp;Pad to 15 seconds&emsp;"]
-    PAD --> OUT["&emsp;Waveform Output&emsp;"]
-```
-
-**FFmpeg Command:**
+Quick local sanity check:
 
 ```bash
-ffmpeg -i input -ar 16000 -ac 1 -f wav pipe:1
+python3.10 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+venv/bin/python -m pytest tests/unit -q
 ```
 
----
+Quick Modal smoke test:
 
-## 4. Training
+```bash
+modal run scripts/modal/train_phase1.py \
+  --config-path /root/configs/phase_lipvis_smoke.yaml
+```
 
-### 4.1 Training Flow
+## Method Overview
 
 ```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
 flowchart LR
-    D1["&emsp;Dataset&emsp;"] --> D2["&emsp;Collate&emsp;"]
-    D2 --> D3["&emsp;DataLoader&emsp;"]
-    D3 --> M["&emsp;MOTA Model&emsp;"]
-    M --> L1["&emsp;CE Loss&emsp;"]
-    M --> L2["&emsp;CTC Loss&emsp;"]
-    L1 --> L3["&emsp;Hybrid Loss&emsp;"]
-    L2 --> L3
-    L3 --> G["&emsp;Gradient Clip&emsp;"]
-    G --> O["&emsp;AdamW Optimizer&emsp;"]
+    V[Video frames] --> ROI[Mouth ROI frames]
+    ROI --> VF[Visual frontend]
+    A[Audio / Whisper features] --> AP[Audio projection]
+    VF --> VP[Visual projection]
+
+    AP --> QG[QualityGate v2]
+    VP --> QG
+
+    QG -->|coarse fused stream| ENC[Conformer encoder]
+
+    AP -. optional .-> MQOT[MQOT + GuidedAttention]
+    VP -. optional .-> MQOT
+    MQOT -. residual refinement .-> ENC
+
+    ENC --> DEC[Hybrid CTC/AR decoder]
+    DEC --> TXT[Transcript]
 ```
 
-### 4.2 Two Phases
+### Core components
 
-**Phase 1: Baseline Training**
+| Component | File | Purpose |
+|---|---|---|
+| MOTA model | [`src/models/mota.py`](src/models/mota.py) | End-to-end model wiring. |
+| QualityGate v2 | [`src/models/fusion/quality_gate.py`](src/models/fusion/quality_gate.py) | Cross-attention alignment and soft reliability fusion. |
+| MQOT | [`src/models/fusion/mqot.py`](src/models/fusion/mqot.py) | Unbalanced Sinkhorn transport plan for audio-visual alignment. |
+| RGF / NRQE | [`src/models/fusion/router_gate.py`](src/models/fusion/router_gate.py), [`src/models/fusion/nrqe.py`](src/models/fusion/nrqe.py) | Optional reliability routing extension. |
+| Lip-reading frontend | [`src/models/visual/lipreading_frontend.py`](src/models/visual/lipreading_frontend.py) | Conv3D + ResNet visual frontend for raw mouth frames. |
+| Decoder | [`src/models/layers/decoders.py`](src/models/layers/decoders.py) | CTC + AR decoder heads. |
+| Trainer | [`src/training/trainer.py`](src/training/trainer.py) | Training loop, resume, auxiliary losses, logging, validation. |
 
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart LR
-    P1A["&emsp;QualityGate&emsp;"] --> P1B["&emsp;Conformer Encoder&emsp;"]
-    P1B --> P1C["&emsp;Hybrid Decoder&emsp;"]
-```
+## Current Training Tracks
 
-**Phase 2: MQOT Refinement**
+The repository contains several configs because the project uses staged experiments rather than a
+single monolithic run.
 
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart LR
-    P2A["&emsp;Freeze QualityGate&emsp;"] --> P2B["&emsp;Train MQOT Layer&emsp;"]
-    P2B --> P2C["&emsp;Fine-tune All&emsp;"]
-```
+| Config | Intent |
+|---|---|
+| [`configs/phase1.yaml`](configs/phase1.yaml) | QualityGate-only baseline on WebDataset frame shards. |
+| [`configs/phase2.yaml`](configs/phase2.yaml) | MQOT-enabled continuation from Phase 1. |
+| [`configs/phase_lipvis.yaml`](configs/phase_lipvis.yaml) | Lip-reading frontend cold start with noisy dev and gradual visual unfreeze. |
+| [`configs/phase_lipvis_force.yaml`](configs/phase_lipvis_force.yaml) | Force visual participation with visual-only auxiliary loss. |
+| [`configs/phase_lipvis_visual_bootstrap.yaml`](configs/phase_lipvis_visual_bootstrap.yaml) | Adds direct visual CTC supervision. |
+| [`configs/phase_lipvis_noisy_av.yaml`](configs/phase_lipvis_noisy_av.yaml) | Stronger noisy-AV training after visual bootstrap. |
+| `*_smoke.yaml` | Cheap Modal smoke tests for a mechanism before a real run. |
 
-**Phase 1 Config:**
+Important interpretation: this project is **AVSR**, not pure visual speech recognition. Visual-only
+decoding is a diagnostic; the primary question is whether AV beats audio-only under the same
+evaluation condition.
 
-- use_mqot = false
-- lr = 3e-4
-- batch = 32
+## Repository Layout
 
-**Phase 2 Config:**
-
-- use_mqot = true
-- lr = 1e-4
-- batch = 16
-
----
-
-## 5. Fusion
-
-### 5.1 QualityGate
-
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart LR
-    A["&emsp;Audio Input&emsp;"] --> AP["&emsp;Project to 256&emsp;"]
-    V["&emsp;Visual Input&emsp;"] --> VP["&emsp;Project to 256&emsp;"]
-    AP --> QA["&emsp;Quality Score&emsp;"]
-    VP --> QV["&emsp;Quality Score&emsp;"]
-    QA --> W["&emsp;Weighted Sum&emsp;"]
-    QV --> W
-    AP --> W
-    VP --> W
-    W --> F["&emsp;Fused Output&emsp;"]
-```
-
-**Formula:**
-
-```
-q_a = sigmoid(MLP(audio))
-q_v = sigmoid(MLP(visual))
-alpha = q_a / (q_a + q_v)
-fused = alpha * audio + (1-alpha) * visual
-```
-
-### 5.2 MQOT Layer
-
-```mermaid
-%%{init: {'flowchart': {'nodeSpacing': 30, 'rankSpacing': 50}}}%%
-flowchart TB
-    A["&emsp;Audio Features&emsp;"] --> SIM["&emsp;Compute Similarity&emsp;"]
-    V["&emsp;Visual Features&emsp;"] --> SIM
-    SIM --> C["&emsp;Cost Matrix&emsp;"]
-    T["&emsp;Temporal Penalty&emsp;"] --> C
-    Q["&emsp;Quality Penalty&emsp;"] --> C
-    C --> K["&emsp;Kernel K&emsp;"]
-    K --> SK["&emsp;Sinkhorn Iterations&emsp;"]
-    SK --> P["&emsp;Transport Map&emsp;"]
-```
-
-**Cost Matrix:**
-
-```
-C = -similarity + λ_time * temporal + λ_quality * quality
-```
-
-**Params:**
-
-- λ_time = 0.5
-- λ_quality = 5.0
-- epsilon = 0.15
-- iterations = 20
-
----
-
-## 6. Formulas
-
-### 6.1 Hybrid Loss
-
-```
-L = α * L_CTC + β * L_CE
-```
-
-| Epoch | α   | β   |
-| ----- | --- | --- |
-| 1-5   | 0.7 | 0.3 |
-| 6-15  | 0.5 | 0.5 |
-| 16+   | 0.3 | 0.7 |
-
-### 6.2 CTC Loss
-
-```
-L_CTC = -log P(Y|X)
-P(Y|X) = sum over alignments
-```
-
-### 6.3 Sinkhorn Algorithm
-
-```
-K = exp(-C / ε)
-
-repeat n times:
-    u = 1 / (K @ v)
-    v = 1 / (K.T @ u)
-
-P = diag(u) @ K @ diag(v)
-```
-
-### 6.4 RMS Normalization
-
-```
-RMS = sqrt(mean(x²))
-x_norm = x * (0.1 / RMS)
-```
-
----
-
-## 7. Project Structure
-
-```
-├── configs/
-│   ├── phase1_base.yaml
-│   └── phase2_mqot.yaml
-├── scripts/modal/
-│   ├── preprocess.py
-│   ├── train_phase1.py
-│   └── train_phase2.py
+```text
+.
+├── assets/                 # Tokenizer assets
+├── configs/                # YAML experiment configs
+├── docs/                   # Setup and Modal operating notes
+├── guides/                 # Dataset extension guide
+├── scripts/
+│   ├── local/              # Local smoke/data utilities
+│   └── modal/              # Modal training, preprocessing, eval, volume tools
 ├── src/
-│   ├── data/
-│   │   ├── preprocessors/
-│   │   ├── datasets/
-│   │   ├── loader.py
-│   │   └── collate.py
-│   ├── models/
-│   │   ├── layers/
-│   │   ├── fusion/
-│   │   └── mota.py
-│   ├── training/
-│   │   ├── trainer.py
-│   │   └── losses.py
-│   └── evaluation/
-└── guides/
-    └── ADDING_NEW_DATASET.md
+│   ├── data/               # Datasets, WebDataset shards, collate, tokenizers, augmentation
+│   ├── evaluation/         # Decoding, metrics, visualization
+│   ├── infra/              # Shared Modal images and volumes
+│   ├── models/             # MOTA, fusion modules, visual frontend, decoder layers
+│   ├── training/           # Trainer, loss, run entrypoint
+│   └── utils/              # Config/device/checkpoint/logging helpers
+├── tests/unit/             # Fast unit tests
+└── verification/           # Local visual verification artifacts
 ```
 
----
+The `thesis/` directory is intentionally ignored in Git on this branch. Keep thesis drafts and
+temporary LaTeX builds out of code commits unless you deliberately decide otherwise.
 
-## 8. Usage
+## Setup
 
-### 8.1 Install
+The Modal workflow is the source of truth for full training. Local setup is mainly for tests,
+smoke checks, and editing.
 
 ```bash
-pip install torch transformers timm jiwer mediapipe
-pip install modal && modal token new
+python3.10 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 8.2 Preprocess
+Modal authentication:
 
 ```bash
-# Crop mouth regions
-modal run scripts/modal/preprocess.py --stage crop --dataset grid
-
-# Extract features
-modal run scripts/modal/preprocess.py --stage extract --dataset grid
+pip install modal
+modal token new
+modal profile current
 ```
 
-### 8.3 Train
+W&B is attached by the training Modal functions, so the `wandb` secret must exist even when a
+config later disables W&B logging:
 
 ```bash
-# Phase 1: Baseline
-modal run scripts/modal/train_phase1.py
-
-# Phase 2: MQOT
-modal run scripts/modal/train_phase2.py
+modal secret create wandb WANDB_API_KEY=<your-wandb-key>
 ```
 
-### 8.4 Config
+See [`docs/SETUP.md`](docs/SETUP.md) for the full Modal, volume, secret, Google Drive backup,
+and train/eval operating guide.
 
-| Param    | P1    | P2   |
-| -------- | ----- | ---- |
-| use_mqot | false | true |
-| batch    | 32    | 16   |
-| lr       | 3e-4  | 1e-4 |
+## Data
 
----
+The current training path expects WebDataset shards on Modal volume:
 
-## References
+```text
+/mnt/vicocktail_features/
+  vicocktail-avvn-train-*.tar
+  vicocktail-avvn-test-000000-*.tar
+  vicocktail-avvn-test_snr_<snr>_interferer_<n>-000000-*.tar
+```
 
-- [Adding New Dataset](guides/ADDING_NEW_DATASET.md)
+Each sample stores:
+
+- `audio.pth`: precomputed Whisper features.
+- `video.pth`: mouth-crop frame tensor.
+- `txt`: transcript.
+
+The reader lives in [`src/data/shards.py`](src/data/shards.py). It supports single glob strings
+and lists of globs, so train/dev splits can be expressed directly in YAML.
+
+## Pretrained Visual Frontend
+
+The lip-reading frontend weights are stored on the Modal volume:
+
+```bash
+modal run scripts/modal/upload_lrw_frontend.py
+modal run scripts/modal/check_visual_frontend.py --relu-type swish
+```
+
+The pre-flight check validates that the checkpoint loads, features are finite, temporal variation is
+non-degenerate, and clips are distinguishable before starting a real training run.
+
+## Training
+
+All commands are run from the repository root.
+
+### Phase 1 / lipvis
+
+```bash
+modal run --detach scripts/modal/train_phase1.py \
+  --config-path /root/configs/phase_lipvis.yaml \
+  --spawn --max-epochs-per-run 1
+```
+
+Use `--spawn` together with `--detach` for long background jobs. Relaunch the same command to resume
+from the latest checkpoint in the configured checkpoint directory.
+
+### Force visual participation
+
+```bash
+modal run scripts/modal/train_phase1.py \
+  --config-path /root/configs/phase_lipvis_force_smoke.yaml
+
+modal run --detach scripts/modal/train_phase1.py \
+  --config-path /root/configs/phase_lipvis_force.yaml \
+  --spawn --max-epochs-per-run 1
+```
+
+### Visual CTC bootstrap
+
+```bash
+modal run scripts/modal/train_phase1.py \
+  --config-path /root/configs/phase_lipvis_visual_bootstrap_smoke.yaml
+
+modal run --detach scripts/modal/train_phase1.py \
+  --config-path /root/configs/phase_lipvis_visual_bootstrap.yaml \
+  --spawn --max-epochs-per-run 1
+```
+
+### Phase 2 with MQOT
+
+```bash
+modal run --detach scripts/modal/train_phase2.py \
+  --config-path /root/configs/phase2.yaml
+```
+
+Make sure the config matches the checkpoint architecture. For example, a checkpoint trained with
+`use_mqot: true` must be evaluated or resumed with an MQOT-enabled config.
+
+## Verification and Evaluation
+
+Fast modality ablation on a checkpoint:
+
+```bash
+modal run scripts/modal/verify_lipvis.py \
+  --checkpoint /mnt/checkpoints/lipvis_force_visual/epoch_3.pt \
+  --config-path /root/configs/phase_lipvis_force.yaml \
+  --limit 1000
+```
+
+This reports:
+
+- AV decoding.
+- audio-only: visual stream zeroed.
+- visual-only: audio stream zeroed.
+- optional visual-CTC-direct WER when the visual CTC head exists.
+
+Full 9-condition evaluation:
+
+```bash
+modal run --detach scripts/modal/eval_phase1.py \
+  --checkpoint /mnt/checkpoints/lipvis/best_model.pt \
+  --config-path /root/configs/phase_lipvis.yaml \
+  --decode greedy
+```
+
+The full evaluator writes JSON to `/mnt/eval/` on the Modal volume. Use it for thesis tables and
+avoid mixing numbers from different eval protocols.
+
+## Local Tests
+
+Use the repository venv, not the system Python:
+
+```bash
+venv/bin/python -m compileall -q src scripts tests
+venv/bin/python -m pytest tests/unit -q
+```
+
+Expected status at the time this README was rewritten:
+
+```text
+100 passed, 2 warnings
+```
+
+## Modal Operations
+
+Common commands:
+
+```bash
+modal volume ls avsr-volume /checkpoints
+modal volume ls avsr-volume /vicocktail_features | head
+modal app list
+modal app stop <app-id>
+```
+
+Backup and restore:
+
+```bash
+modal run scripts/modal/backup_to_gdrive.py --dry-run
+modal run scripts/modal/backup_to_gdrive.py
+modal run scripts/modal/restore_from_gdrive.py --dry-run
+```
+
+For details and gotchas, read [`docs/SETUP.md`](docs/SETUP.md).
+
+## Development Notes
+
+- Keep code changes and thesis drafts in separate commits.
+- Do not commit checkpoints, WebDataset shards, raw media, W&B runs, Modal artifacts, or LaTeX build
+  outputs.
+- `thesis/` is ignored on this branch.
+- Add an explicit `LICENSE` file before treating the repository as redistributable open-source code.
+- Use `git diff --check` before committing.
+- Prefer small mechanism-level smoke configs before launching long Modal jobs.
+- Treat visual-only WER as a diagnostic, not as the main success metric.
+
+## Known Caveats
+
+- The visual branch is difficult to train from limited Vietnamese AV data. Expect audio to dominate
+  early checkpoints.
+- MQOT is an alignment/refinement mechanism; it is not a substitute for a visual frontend that has no
+  usable signal.
+- Noisy-dev augmentation is a proxy. Final claims should use the baked-noise test shards and the
+  full evaluation script.
+- W&B step logging uses `global_step` to make resumed runs readable; do not compare old runs unless
+  their logging protocol is known.
+
+## References and Related Projects
+
+The README structure follows two kinds of references:
+
+GitHub presentation references: clear first screen, badges, quick start, table of contents, status,
+installation, usage, and caveats.
+
+- [Awesome README](https://github.com/matiassingers/awesome-readme)
+- [Best README Template](https://github.com/othneildrew/Best-README-Template)
+- [Ultralytics](https://github.com/ultralytics/ultralytics)
+- [Segment Anything](https://github.com/facebookresearch/segment-anything)
+
+Speech and research-code references: abstract, installation, examples, model/recipe information,
+and citation near the top:
+
+- [OpenAI Whisper](https://github.com/openai/whisper)
+- [ESPnet](https://github.com/espnet/espnet)
+- [fairseq](https://github.com/facebookresearch/fairseq)
+
+Research context:
+
+- AV-HuBERT: Self-Supervised Learning of Audio-Visual Speech Representations
+- Robust Self-Supervised Audio-Visual Speech Recognition
+- ViCocktail: Vietnamese Cocktail Party Audio-Visual Speech Recognition
+
+## Citation
+
+If you use this repository in a thesis report or derived experiment, cite the relevant upstream
+models and datasets in addition to this codebase:
+
+```bibtex
+@misc{mota_avsr,
+  title  = {MOTA AVSR: Multimodal Optimal Transport Alignment for Vietnamese AVSR},
+  author = {Project contributors},
+  year   = {2026},
+  note   = {Research code}
+}
+```
